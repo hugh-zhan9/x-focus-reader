@@ -45,13 +45,16 @@ async function harness(settings = {}) {
   article.special={'time':[time],'[data-testid="tweetText"]':[text]};
   col.special={'article[data-testid="tweet"]':[article],'[role="tab"][aria-selected="true"]':selected};
   const docEl=new E('html');
-  docEl.classList={toggle(){}};
+  const classes=new Set();
+  docEl.classList={toggle(c,on){if(on) classes.add(c); else classes.delete(c);}};
   let change, observe;
-  const frames = [], intervals=[], feedStates=[], writes=[];
+  const frames = [], intervals=[], feedStates=[], writes=[], expanded=[], media=[];
   const history={back(){}};
   const context=vm.createContext({
     URL, Element:E, location:{origin:'https://x.com',pathname:'/home'}, history,
     document: { body, documentElement:docEl, querySelector:() => col, createElement:t=>new E(t) },
+    XFRTextExpand:{expand(el,id){expanded.push(id)}},
+    XFRMedia:{show(el,id){media.push(id)},prune(visible){media.push(visible.size)}},
     XFRReading: {init(adapter){return {start(){},refresh(){feedStates.push(adapter.getRoute())},setKeys(){},beforeOpen(){}}}},
     MutationObserver: class { constructor(fn){observe=fn} observe(){} },
     chrome:{storage:{local:{async get(){return {settings}},async set(data){settings=data.settings;writes.push(settings)}},onChanged:{addListener(fn){change=fn}}}},
@@ -63,7 +66,7 @@ async function harness(settings = {}) {
   await new Promise(resolve=>setImmediate(resolve));
   const frame=()=>{ for(const fn of frames.splice(0)) fn(); };
   frame();
-  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,update(settings){change({settings:{newValue:settings}},'local');frame()}};
+  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,classes,expanded,media,update(settings){change({settings:{newValue:settings}},'local');frame()}};
 }
 test('filter decorates only recognized feeds, gives a reason and restores original mode',async()=>{
   const h=await harness({keywords:['抽奖']});
@@ -146,4 +149,22 @@ test('a recycled post button cannot block the former author', async()=>{
   h.observe([{target:h.anchor,type:'attributes'}]); h.frame();
   const next = h.article.children.at(-1).children[0];
   assert.equal(next.getAttribute('aria-label'),'屏蔽 @newauthor');
+});
+
+
+test('reading enhancements respect native mode, filtered cards and timeline versus detail',async()=>{
+  const h=await harness({keywords:['抽奖']});
+  assert.ok(h.classes.has('xfr-wide'));
+  assert.deepEqual(h.expanded,[]);
+  assert.deepEqual(h.media,[0]);
+  h.update({});
+  assert.deepEqual(h.expanded,['123']);
+  assert.deepEqual(h.media,[0,'123',1]);
+  h.context.location.pathname='/Example/status/123';
+  h.intervals[0](); h.frame();
+  assert.deepEqual(h.expanded,['123']);
+  assert.deepEqual(h.media,[0,'123',1,'123',1]);
+  h.update({preset:'original'});
+  assert.ok(!h.classes.has('xfr-wide'));
+  assert.equal(h.media.at(-1),0);
 });

@@ -6,7 +6,9 @@
 .xfr-filter button { margin-inline-start: .55rem; }
 .xfr-boundary {border-block-start:2px solid #1786c9; font-weight: 600; }
 article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
-.xfr-control {display:block; margin: 0 .85rem .45rem; inline-size: fit-content;}
+.xfr-control { display:flex; justify-content:flex-end; margin:.1rem .75rem .25rem; }
+.xfr-control button { min-block-size:24px; padding:.1rem .45rem; border-color:transparent; color:color-mix(in srgb, CanvasText 75%, Canvas); font-size:12px; }
+.xfr-control button:hover { border-color:GrayText; color:CanvasText; }
 .xfr-panel {position:fixed; z-index:20; inset-inline-end: min(3vw, 22px); inset-block-end:18px; display:grid; gap:.35rem; padding:.65rem; border:1px solid GrayText; border-radius:.65rem; background: Canvas; box-shadow:0 3px 18px #0003; max-inline-size:min(335px,80vw);}
 .xfr-panel [hidden] {display:none!important;}
 .xfr-panel div {display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;}
@@ -15,3 +17,31 @@ article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
 .xfr-current { outline: 2px solid #1786c9 !important; outline-offset: -2px; }
 .xfr[hidden], .xfr [hidden] {display:none!important;}
 .xfr-reader-position {inset-block-end: min(12vh, 90px);}
+
+/* Only widen recognized X layouts on desktop. Keep X's own navigation and
+   sidebar in the flex layout; the reading column gives way when space is tight. */
+@media (min-width: 1300px) {
+  html.xfr-wide main:has([data-testid="primaryColumn"]) {
+    inline-size:1258px !important;
+    flex-shrink:1 !important;
+    max-inline-size:100% !important;
+    min-inline-size:0 !important;
+  }
+  html.xfr-wide main :has([data-testid="primaryColumn"]) {
+    inline-size:100% !important;
+    max-inline-size:100% !important;
+    min-inline-size:0 !important;
+  }
+  html.xfr-wide main [data-testid="primaryColumn"] {
+    flex:1 1 880px !important;
+    inline-size:100% !important;
+    max-inline-size:880px !important;
+    min-inline-size:0 !important;
+  }
+  html.xfr-wide main :has(> [data-testid="primaryColumn"]):has(> [data-testid="sidebarColumn"]) {
+    column-gap:clamp(12px, 2vw, 28px);
+  }
+  html.xfr-wide main [data-testid="sidebarColumn"] {
+    flex-shrink:0;
+  }
+}

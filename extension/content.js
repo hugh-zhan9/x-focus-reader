@@ -231,6 +231,9 @@
       .reduce((soonest, block) => typeof block?.expiresAt === 'number' && block.expiresAt > now
         ? Math.min(soonest, block.expiresAt) : soonest, Infinity);
     current.clear();
+    const improvedLayout = raw.preset !== 'original' && Boolean(col && (state.feed || state.post));
+    document.documentElement.classList.toggle('xfr-wide', improvedLayout);
+    const mediaArticles = new Set();
     // Never decorate conversations, DMs, profile views or off-domain pages.
     if (col && state.feed && raw.preset !== 'original') {
       for (const article of col.querySelectorAll(ARTICLE)) {
@@ -241,12 +244,26 @@
         renderFiltered(article, view, outcome.reasons);
         post.collapsed = article.hasAttribute('data-xfr-collapsed');
         current.set(post.id, post);
+        if (!post.collapsed) {
+          if (!outcome.reasons.length) globalThis.XFRTextExpand?.expand(article, post.id);
+          globalThis.XFRMedia?.show(article, post.id, location.origin);
+          mediaArticles.add(article);
+        }
       }
     } else if (col) {
       for (const article of col.querySelectorAll(ARTICLE)) {
         clearArticle(article);
       }
     }
+    if (improvedLayout && !state.feed) {
+      for (const article of col.querySelectorAll(ARTICLE)) {
+        const post = parse(article);
+        if (!post) continue;
+        globalThis.XFRMedia?.show(article, post.id, location.origin);
+        mediaArticles.add(article);
+      }
+    }
+    globalThis.XFRMedia?.prune(mediaArticles);
     document.documentElement.classList.toggle('xfr-clean', Boolean(state.feed && raw.preset === 'clean'));
     reader?.refresh?.();
   }
@@ -263,7 +280,7 @@
     if (!activeFeed) return;
     const article = ev.target.closest(ARTICLE);
     const p = article && timeline.get(article);
-    if (!p || ev.target.closest('.xfr')) return;
+    if (!p || ev.target.closest('.xfr,[data-testid="tweet-text-show-more-link"],[data-testid="tweet-text-show-more-button"]')) return;
     const link = statusLink(anchor);
     if (anchor && (!link || link.id !== p.id)) return;
     if (!anchor && ev.target.closest('button,[role="button"],[role="link"],input,textarea,select,summary,video,[contenteditable]')) return;
@@ -341,7 +358,7 @@
     })) schedule();
   });
   observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true,
-    attributes: true, attributeFilter:['aria-selected','href','data-testid'] });
+    attributes: true, attributeFilter:['aria-selected','href','data-testid','src','alt','hidden','inert'] });
   window.addEventListener('popstate', schedule);
   setInterval(() => {
     const state = route();
