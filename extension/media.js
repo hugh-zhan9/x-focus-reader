@@ -1,11 +1,12 @@
 'use strict';
 (() => {
   const photo = '[data-testid="tweetPhoto"]';
-  const carousel = '[data-testid="ScrollSnap-List"],[data-testid="ScrollSnap-SwipeableList"]';
+  const carousel = '[data-testid="ScrollSnap-List"],[data-testid="ScrollSnap-SwipeableList"],[class~="snap-x"]';
+  const modernShell = '[class~="group/carousel"]';
   const arrows = '[data-testid="ScrollSnap-prevButtonWrapper"],[data-testid="ScrollSnap-nextButtonWrapper"]';
   const gating = '[data-testid*="sensitive" i],[data-testid*="interstitial" i],[data-testid*="mediawarning" i]';
   const excluded = '[data-testid="quoteTweet"],[inert],[hidden],' + gating;
-  const mixed = 'video,[data-testid="videoPlayer"],[data-testid="gifPlayer"],[data-testid="card.wrapper"]';
+  const mixed = 'video,[data-testid="videoComponent"],[data-testid="videoPlayer"],[data-testid="gifPlayer"],[data-testid="card.wrapper"]';
   const controls = 'button,[role="button"],input,select,textarea,[contenteditable="true"]';
   const nativeAttr = 'data-xfr-native-photos';
   const mounted = new Map();
@@ -15,7 +16,7 @@
     try {
       const url = new URL(href, origin);
       if (url.origin !== origin) return null;
-      const m = /^\/(?:[a-z0-9_]{1,15}|i\/web)\/status\/(\d{1,25})\/photo\/([1-4])\/?$/i.exec(url.pathname);
+      const m = /^\/(?:[a-z0-9_]{1,15}|i\/web)\/status\/(\d{1,25})\/photo\/([1-9]|1[0-9]|20)\/?$/i.exec(url.pathname);
       return m && m[1] === postId ? {href: url.href, index: Number(m[2])} : null;
     } catch { return null; }
   }
@@ -30,29 +31,74 @@
     } catch { return null; }
   }
 
+  function imageSource(img) {
+    return photoSource(img.getAttribute('src')) || photoSource(img.currentSrc);
+  }
+
+  function trackPhotos(article, track, postId, origin) {
+    if (track.closest('article') !== article || track.closest(excluded) || track.querySelector(gating + ',' + mixed)) return null;
+    const cells = [...track.children].filter(cell => !cell.matches(arrows));
+    if (cells.length < 2 || cells.length > 20) return null;
+    const items = [];
+    for (const [i, cell] of cells.entries()) {
+      if (cell.matches(excluded) || cell.querySelector(excluded)) return null;
+      const images = cell.matches('img') ? [cell] : [...cell.querySelectorAll('img')];
+      const sources = new Map();
+      for (const img of images) {
+        const src = imageSource(img);
+        if (src) sources.set(new URL(src).pathname, {img,src});
+      }
+      if (sources.size !== 1) return null; // Never remove a track with an empty or ambiguous slide.
+      const {img,src} = sources.values().next().value;
+      const wrap = img.closest(photo);
+      const anchor = img.closest('a[href]') || cell.querySelector('a[href]');
+      const link = anchor && photoLink(anchor.getAttribute('href'), postId, origin);
+      if (anchor && !link) return null;
+      const trigger = img.closest('[role="button"]');
+      items.push({anchor, wrap, img, src, cell, trigger:trigger && cell.contains(trigger) ? trigger : null,
+        index:link?.index || i+1, numbered:!!link, href:link?.href || null, alt:img.getAttribute('alt') || ''});
+    }
+    if (!items.some(item => item.numbered || (item.wrap && track.contains(item.wrap))) && !track.closest(modernShell)) return null;
+    const indexed = items.filter(item => item.numbered);
+    if (indexed.some((item,i) => indexed.findIndex(other => other.index === item.index) !== i)) return null;
+    if (indexed.length === items.length) {
+      items.sort((a,b)=>a.index-b.index);
+      if (items.some((item,i)=>item.index !== i+1)) return null;
+    }
+    return items;
+  }
+
   function discover(article, postId, origin) {
     if (article.querySelector(gating)) return null;
-    const entries = new Map();
-    for (const wrapper of article.querySelectorAll(photo)) {
-      if (wrapper.closest('article') !== article || wrapper.closest(excluded)) continue;
-      const anchor = wrapper.closest('a[href]') || wrapper.querySelector('a[href]');
-      const link = anchor && photoLink(anchor.getAttribute('href'), postId, origin);
-      if (!link) continue; // quoted or unrelated media may not become part of this post's gallery
-      const img = Array.from(wrapper.querySelectorAll('img')).find(image => photoSource(image.getAttribute('src') || image.currentSrc));
-      if (!img || entries.has(link.index)) return null;
-      entries.set(link.index, {...link, anchor, wrapper, src:photoSource(img.getAttribute('src') || img.currentSrc), alt:img.getAttribute('alt') || ''});
+    let items, native, scrollRoot;
+    const tracks = [...article.querySelectorAll(carousel)];
+    for (const track of tracks) {
+      const inline = trackPhotos(article, track, postId, origin);
+      if (!inline) continue;
+      // More than one unrelated photo track is ambiguous.
+      if (scrollRoot && !track.contains(scrollRoot) && !scrollRoot.contains(track)) return null;
+      items = inline;
+      native = scrollRoot = track;
     }
-    const items = [...entries.values()].sort((a,b)=>a.index-b.index);
-    if (!items.length || items.some((item, i) => item.index !== i + 1)) return null;
-    let native = items[0].anchor;
-    const scrollRoot = items[0].wrapper.closest(carousel);
-    // Do not replace a carousel with only its currently mounted first slide.
-    if (scrollRoot && items.length < 2) return null;
-    if (scrollRoot && Array.from(scrollRoot.querySelectorAll('a[href]')).some(a =>
-      photoLink(a.getAttribute('href'), postId, origin) && !items.some(item => item.anchor === a))) return null;
-    if (scrollRoot && items.every(item => scrollRoot.contains(item.anchor))) native = scrollRoot;
-    while (native && native !== article && !items.every(item => native.contains(item.anchor))) native = native.parentElement;
-    const anchors = new Set(items.map(item => item.anchor));
+    if (!items) {
+      const entries = new Map();
+      for (const wrap of article.querySelectorAll(photo)) {
+        if (wrap.closest('article') !== article || wrap.closest(excluded)) continue;
+        // Snap tracks require complete slide-by-slide discovery, not a subset of linked photos.
+        if (wrap.closest(carousel)) return null;
+        const anchor = wrap.closest('a[href]') || wrap.querySelector('a[href]');
+        const link = anchor && photoLink(anchor.getAttribute('href'), postId, origin);
+        if (!link) continue;
+        const img = Array.from(wrap.querySelectorAll('img')).find(image => imageSource(image));
+        if (!img || entries.has(link.index)) return null;
+        entries.set(link.index, {...link, anchor, wrap, img, src:imageSource(img), alt:img.getAttribute('alt') || ''});
+      }
+      items = [...entries.values()].sort((a,b)=>a.index-b.index);
+      if (!items.length || items.some((item, i) => item.index !== i + 1)) return null;
+      native = items[0].anchor;
+      while (native && native !== article && !items.every(item => native.contains(item.anchor))) native = native.parentElement;
+    }
+    const anchors = new Set(items.map(item => item.anchor).filter(Boolean));
     function pure(group) {
       if (!group || group === article || !article.contains(group) || group.matches(excluded)) return false;
       // X puts the arrows next to the track inside an aspect-ratio shell.
@@ -61,13 +107,23 @@
       const ownsTrack = scrollRoot && group.contains(scrollRoot) &&
         [...group.querySelectorAll(carousel)].every(list => list.contains(scrollRoot) || scrollRoot.contains(list));
       const isArrowPart = el => {
-        const wrapper = ownsTrack && el.closest(arrows);
-        return wrapper && group.contains(wrapper) && !wrapper.contains(scrollRoot) && !scrollRoot.contains(wrapper);
+        if (!ownsTrack) return false;
+        const wrapper = el.closest(arrows);
+        if (wrapper && group.contains(wrapper) && !wrapper.contains(scrollRoot) && !scrollRoot.contains(wrapper)) return true;
+        const shell = scrollRoot.closest(modernShell);
+        if (!shell || !group.contains(shell) || !shell.contains(el) || scrollRoot.contains(el)) return false;
+        const branch = childOf(shell, el);
+        if (!branch || branch === childOf(shell, scrollRoot) || branch.querySelector('img,a[href]')) return false;
+        // Current X has sibling wrappers for Previous/Next slide. Never hide a generic action.
+        const buttons = [branch, ...branch.querySelectorAll(controls)].filter(button => button.matches(controls));
+        return buttons.length === 1 && /^(?:previous|next)(?: (?:slide|image|photo))?$|^(?:上一张|下一张|上一張|下一張)$/i
+          .test(buttons[0].getAttribute('aria-label') || '');
       };
       return !group.querySelector(gating + ',' + mixed) &&
-        Array.from(group.querySelectorAll(excluded + ',' + controls)).every(isArrowPart) &&
+        Array.from(group.querySelectorAll(excluded + ',' + controls)).every(el => isArrowPart(el) ||
+          (el.matches('[role="button"]') && items.some(item => item.trigger === el))) &&
         !group.textContent.trim() && Array.from(group.querySelectorAll('a[href]')).every(a => anchors.has(a)) &&
-        Array.from(group.querySelectorAll(photo)).every(w => items.some(item => item.wrapper === w));
+        Array.from(group.querySelectorAll(photo)).every(w => items.some(item => item.wrap === w || (item.cell && item.cell.contains(w))));
     }
     if (!pure(native)) return null;
     // Bypass fixed aspect-ratio ancestors without changing React's original nodes.
@@ -168,7 +224,11 @@
     };
     for (const {anchor, href, src, alt, index} of items) {
       const link = article.ownerDocument.createElement('a');
-      link.href = href;
+      link.href = href || src;
+      if (!href) {
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      }
       const image = article.ownerDocument.createElement('img');
       image.alt = alt || '图片 ' + index;
       image.loading = 'lazy';
@@ -180,7 +240,7 @@
       link.addEventListener('click', event => {
         event.stopPropagation();
         if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        if (!anchor.isConnected || photoLink(anchor.getAttribute('href'), postId, origin)?.href !== href) return;
+        if (!anchor?.isConnected || photoLink(anchor.getAttribute('href'), postId, origin)?.href !== href) return;
         event.preventDefault();
         anchor.click();
       });

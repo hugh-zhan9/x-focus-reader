@@ -32,7 +32,7 @@ class El {
   removeAttribute(key) { delete this.attrs[key]; }
   matches(list) {
     return list.split(',').some(rule => {
-      const m=/^([\w-]+)?(?:\[([\w-]+)(?:([*]?=)"([^"]*)"( i)?)?\])?$/.exec(rule);
+      const m=/^([\w-]+)?(?:\[([\w-]+)(?:([*~]?=)"([^"]*)"( i)?)?\])?$/.exec(rule);
       if (!m) throw Error('Unsupported test selector: '+rule);
       if (m[1] && m[1] !== this.tag) return false;
       if (!m[2]) return true;
@@ -40,7 +40,7 @@ class El {
       if (actual === null) return false;
       let expected=m[4];
       if (m[5]) { actual=actual.toLowerCase(); expected=expected.toLowerCase(); }
-      return !m[3] || (m[3]==='=' ? actual===expected : actual.includes(expected));
+      return !m[3] || (m[3]==='=' ? actual===expected : m[3]==='~=' ? actual.split(/\s+/).includes(expected) : actual.includes(expected));
     });
   }
   closest(sel) { return this.matches(sel) ? this : this.parentElement?.closest(sel) || null; }
@@ -200,4 +200,35 @@ test('incomplete carousels and controls belonging to a different track are not r
   media.show(b,'12',origin);
   assert.equal(right.closest('[data-xfr-native-photos]'),null);
   media.prune(new Set());
+});
+
+
+test('modern snap-x extracts all direct slides even when only the first has a photo link/testid',()=>{
+  const photoCell=make('div',{},[slide(1,src(1))]);
+  const linkless=(n)=>make('div',{},[make('div',{role:'button'},[make('img',{src:src(n)})])]);
+  const track=make('div',{class:'w-full snap-x snap-mandatory'},[photoCell,linkless(2),linkless(3)]);
+  const left=make('div',{},[make('button',{'aria-label':'Previous slide'})]);
+  const right=make('div',{},[make('button',{'aria-label':'Next slide'})]);
+  const shell=make('div',{class:'group/carousel relative'},[track,left,right]);
+  const a=article(body(),shell,make('button',{'data-testid':'reply'}));
+  media.show(a,'12',origin);
+  const gallery=findGallery(a);
+  assert.deepEqual(gallery.children.map(el=>el.children[0].src),[src(1),src(2),src(3)]);
+  assert.equal(gallery.children[0].href,origin+'/example/status/12/photo/1');
+  assert.equal(gallery.children[1].href,src(2));
+  assert.equal(left.closest('[data-xfr-native-photos]'),shell);
+  assert.equal(right.closest('[data-xfr-native-photos]'),shell);
+  media.prune(new Set());
+  assert.equal(left.closest('[data-xfr-native-photos]'),null);
+});
+
+test('an empty or mixed slide in a modern track leaves all native media accessible',()=>{
+  for(const unready of [make('div',{},[make('img')]),make('div',{'data-testid':'videoComponent'},[make('img',{src:src(3)})])]){
+    const a=article(body(),make('div',{class:'group/carousel'},[
+      make('div',{class:'snap-x'},[make('div',{},[slide(1,src(1))]),make('div',{},[slide(2,src(2))]),unready]),
+    ]));
+    media.show(a,'12',origin);
+    assert.equal(findGallery(a),undefined);
+    assert.equal(a.querySelector('[data-xfr-native-photos]'),null);
+  }
 });

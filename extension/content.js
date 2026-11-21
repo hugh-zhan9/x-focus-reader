@@ -307,30 +307,13 @@
     reader?.beforeOpen?.(current.get(p.id));
   }, true);
 
-  let progressBar, resumeButton, fallback, boundary, outlined;
+  let boundary, outlined;
   function renderProgress(snapshot) {
-    if (!progressBar) {
-      progressBar = node('aside', 'xfr xfr-panel xfr-reader-position');
-      progressBar.setAttribute('aria-label', 'X Focus Reader 阅读进度');
-      resumeButton = action('继续上次阅读', () => reader.resume());
-      fallback = node('a','','打开上次的帖子');
-      fallback.target = '_blank';
-      fallback.rel = 'noopener noreferrer';
-      const row = node('div');
-      row.append(resumeButton, fallback);
-      progressBar.append(row);
-      document.body.append(progressBar);
-      boundary = node('div','xfr xfr-boundary','上次读到这里');
-    }
+    if (!boundary) boundary = node('div','xfr xfr-boundary','上次读到这里');
     const entry = snapshot?.boundary || snapshot?.saved;
     const recorded = entry && /^\d{1,25}$/.test(String(entry.id));
     const canShow = Boolean(raw.preset !== 'original' && snapshot?.feedKey && recorded);
-    progressBar.hidden = !canShow;
     const last = canShow ? current.get(String(entry.id)) : null;
-    resumeButton.hidden = !last || last.collapsed;
-    fallback.hidden = Boolean(last && !last.collapsed) || !canShow;
-    if (canShow) fallback.href = 'https://x.com/i/web/status/' + entry.id;
-    else fallback.removeAttribute('href');
     if (canShow && snapshot.feedKey === 'home:following' && last && !last.collapsed) {
       if (boundary.parentElement !== last.element) last.element.prepend(boundary);
     } else boundary.remove();
@@ -358,8 +341,19 @@
       },
       goBack: () => history.back(),
       onProgress: renderProgress,
-      onBoundary: (kind) => {
-        if (kind === 'missing') announce('上次的帖子暂未载入，可用「打开上次的帖子」。');
+      openSaved(saved, key) {
+        if (raw.preset === 'original' || route().feed !== key || current.get(saved.id)?.collapsed ||
+            document.querySelector('[role="dialog"][aria-modal="true"],[data-testid="sheetDialog"]')) return false;
+        const target = statusLink({getAttribute: () => saved.href});
+        if (target?.id !== saved.id) return false;
+        try {
+          const state = history.state;
+          if (state !== null && typeof state !== 'object') return false;
+          if (state?.xfrAutoResume === key + ':' + saved.id) return false;
+          history.replaceState({...state, xfrAutoResume:key + ':' + saved.id}, '');
+          location.assign(target.url);
+          return true;
+        } catch { return false; }
       },
       canHandleKey(ev) {
         if (raw.preset === 'original' || raw.shortcutsEnabled === false) return false;
@@ -378,8 +372,13 @@
     })) schedule();
   });
   observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true,
-    attributes: true, attributeFilter:['aria-selected','href','data-testid','src','alt','hidden','inert'] });
+    attributes: true, attributeFilter:['aria-selected','href','data-testid','src','srcset','alt','hidden','inert'] });
   window.addEventListener('popstate', schedule);
+  addEventListener('load', event => {
+    const img = event.target;
+    if (img instanceof Element && img.matches('img') && !img.closest('.xfr') &&
+        img.closest(ARTICLE) && globalThis.XFRMedia?.photoSource(img.currentSrc)) schedule();
+  }, true);
   setInterval(() => {
     const state = route();
     if ((state.feed || '') + '|' + (state.post || '') !== activeRoute || Date.now() >= expirationsAt) schedule();

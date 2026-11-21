@@ -22,7 +22,6 @@ article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
 .xfr-clean main [data-testid="sidebarColumn"] { visibility:hidden !important; pointer-events:none !important; }
 .xfr-current { outline: 2px solid #1786c9 !important; outline-offset: -2px; }
 .xfr[hidden], .xfr [hidden] {display:none!important;}
-.xfr-reader-position {inset-block-end: min(12vh, 90px);}
 
 /* Only widen recognized X layouts on desktop. Keep X's own navigation and
    sidebar in the flex layout; the reading column gives way when space is tight. */
@@ -42,6 +41,18 @@ article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
     flex:1 1 880px !important;
     inline-size:100% !important;
     max-inline-size:880px !important;
+    min-inline-size:0 !important;
+  }
+  /* The virtual timeline and its cell can each have their own narrow cap. */
+  html.xfr-wide main [data-testid="primaryColumn"]
+    :is(div:has(> section[role="region"] [data-testid="cellInnerDiv"]),
+        section[role="region"]:has([data-testid="cellInnerDiv"]),
+        [id^="urt:"]:has([data-testid="cellInnerDiv"], article[data-testid="tweet"]),
+        .r-1ye8kvj:has([data-testid="cellInnerDiv"], article[data-testid="tweet"]),
+        [data-testid="cellInnerDiv"]:has(article[data-testid="tweet"]),
+        [data-testid="cellInnerDiv"] article[data-testid="tweet"]):not(article *) {
+    inline-size:100% !important;
+    max-inline-size:none !important;
     min-inline-size:0 !important;
   }
   html.xfr-wide main :has(> [data-testid="primaryColumn"]):has(> [data-testid="sidebarColumn"]) {

@@ -1,10 +1,11 @@
 /* Timeline position/navigation. Adapters supply the current feed and DOM posts;
- * this module never fetches content, walks browser history, or restores on startup. */
+ * this module never fetches content, walks browser history, or scrolls to an unloaded post. */
 ((global) => {
   'use strict';
 
   const DEFAULT_KEYS = Object.freeze({ next: 'j', previous: 'k', open: 'Enter', origin: 'Escape' });
   const SCROLL_SAVE_MS = 160;
+  const AUTO_RESUME_MS = 3000;
   const OPEN_WINDOW_MS = 3000;
   const RETURN_WINDOW_MS = 3000;
   const EDITABLE = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]';
@@ -33,6 +34,7 @@
     const now = adapter.now || Date.now;
     const frozen = new Map();
     const unsaved = new Map();
+    const latest = new Map();
     const writeQueues = new Map();
     let keys = { ...DEFAULT_KEYS };
     let feedKey = null;
@@ -43,7 +45,12 @@
     let pendingReturn = null;
     let reachedBoundary = false;
     let scrollTimer = null;
-    let scrollFeed = null;
+    let auto = null;
+    let autoTimer = null;
+    let initialHistoryNavigation = win.performance?.getEntriesByType?.('navigation')?.[0]?.type === 'back_forward';
+    let firstEntry = !initialHistoryNavigation;
+    let initialInput = false;
+    let historyPath = null;
     let returnTimer = null;
     let started = false;
     let baselineY = 0;
@@ -141,14 +148,46 @@
       writeQueues.set(key, queued);
       queued.then(() => { if (writeQueues.get(key) === queued) writeQueues.delete(key); });
     }
-    function capture(expectedFeed = null) {
+    function stage() {
+      if (!feedKey || !current || frozen.get(feedKey)?.status !== 'ready') return false;
+      const record = { ...current, updatedAt: now() };
+      latest.set(feedKey, record);
+      unsaved.set(feedKey, record);
+      return true;
+    }
+    function cancelAuto() {
+      auto = null;
+      if (autoTimer !== null) win.clearTimeout(autoTimer);
+      autoTimer = null;
+    }
+    function noteInput() {
+      if (!feedKey && firstEntry) initialInput = true;
+      firstEntry = false;
+      cancelAuto();
+    }
+    function startAuto(cold) {
+      auto = { expiresAt: now() + AUTO_RESUME_MS, y: baselineY };
+      if (!cold || typeof adapter.openSaved !== 'function') return;
+      autoTimer = win.setTimeout(() => {
+        const pending = auto;
+        autoTimer = null;
+        if (!pending) return;
+        if (doc.visibilityState === 'hidden' || now() > pending.expiresAt + 1000) { cancelAuto(); return; }
+        const key = feedKey;
+        const saved = latest.get(key) || frozen.get(key)?.saved;
+        // Re-read route/current DOM so a tab switch or newly mounted exact post wins.
+        // Prevent a tiny scheduling excess from skipping an available anchor.
+        pending.expiresAt = Infinity;
+        update();
+        if (pending !== auto) return;
+        cancelAuto();
+        if (feedKey === key && saved?.href) adapter.openSaved(saved, key);
+      }, AUTO_RESUME_MS);
+    }
+    function capture() {
+      cancelAuto();
       update();
-      if (!feedKey || !current || (expectedFeed && expectedFeed !== feedKey)) return false;
-      if (!frozen.get(feedKey)?.saved && frozen.get(feedKey)?.status !== 'ready') {
-        // Load the old position before anything can overwrite it.
-        return false;
-      }
-      unsaved.set(feedKey, { ...current, updatedAt: now() });
+      if (!stage()) return false;
       flush();
       return true;
     }
@@ -166,16 +205,19 @@
       return true;
     }
 
-    function update(force = false) {
+    function update(force = false, fromHistory = false) {
       const incomingFeed = adapter.getFeedKey?.() || null;
       const rawDetail = String(adapter.getDetailId?.() ?? '');
       const incomingDetail = ID.test(rawDetail) ? rawDetail : null;
+      const suppressResume = fromHistory || (historyPath !== null && historyPath === routePath());
+      if (historyPath !== null && (incomingFeed || historyPath !== routePath())) historyPath = null;
+      if (incomingDetail || fromHistory) firstEntry = false;
       if (incomingFeed !== feedKey || incomingDetail !== detailId) {
         const oldFeed = feedKey;
         flush(oldFeed);
         if (scrollTimer !== null) win.clearTimeout(scrollTimer);
         scrollTimer = null;
-        scrollFeed = null;
+        cancelAuto();
         feedKey = incomingFeed;
         detailId = incomingDetail;
         current = null;
@@ -190,7 +232,15 @@
         pendingOpen = null;
         if (pendingReturn && incomingFeed && incomingFeed !== pendingReturn.feedKey) clearReturn();
         if (pendingReturn && incomingDetail && incomingDetail !== pendingReturn.detailId) clearReturn();
-        if (feedKey) beginLoad(feedKey);
+        if (feedKey) {
+          beginLoad(feedKey);
+          if (!suppressResume && !pendingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
+            startAuto(firstEntry && Math.abs(baselineY) < 20);
+          }
+          firstEntry = false;
+          initialHistoryNavigation = false;
+          initialInput = false;
+        }
       }
       if (feedKey && pendingReturn?.feedKey === feedKey) {
         const returned = jump(pendingReturn.position);
@@ -199,6 +249,16 @@
           originMarker = null;
           if (returned) baselineY = getY();
           else boundary('missing-origin');
+        }
+      }
+      if (auto) {
+        if (now() > auto.expiresAt || getY() !== auto.y) cancelAuto();
+        else {
+          const saved = latest.get(feedKey) || frozen.get(feedKey)?.saved;
+          if (saved && jump(saved)) {
+            cancelAuto();
+            baselineY = getY();
+          }
         }
       }
       const location = locate();
@@ -212,22 +272,19 @@
     }
     function onScroll() {
       update();
-      if (!feedKey || pendingReturn || Math.abs(getY() - baselineY) < 20) return;
+      if (!feedKey || pendingReturn || Math.abs(getY() - baselineY) < 20 || !stage()) return;
+      const key = feedKey;
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
-      scrollFeed = feedKey;
-      scrollTimer = win.setTimeout(() => { const key = scrollFeed; scrollTimer = null; scrollFeed = null; capture(key); }, SCROLL_SAVE_MS);
+      scrollTimer = win.setTimeout(() => { scrollTimer = null; flush(key); }, SCROLL_SAVE_MS);
     }
     function pagehide() {
-      if (scrollTimer !== null) {
-        win.clearTimeout(scrollTimer);
-        scrollTimer = null;
-        const key = scrollFeed;
-        scrollFeed = null;
-        capture(key);
-      }
+      cancelAuto();
+      if (scrollTimer !== null) win.clearTimeout(scrollTimer);
+      scrollTimer = null;
       flush();
     }
     function step(direction) {
+      cancelAuto();
       update();
       const { choices, line } = locate();
       if (!feedKey || !current) return false;
@@ -242,6 +299,7 @@
       return true;
     }
     function resume() {
+      cancelAuto();
       update();
       const saved = getProgress().saved;
       if (!saved || !jump(saved)) { boundary('missing', { saved }); return false; }
@@ -249,6 +307,7 @@
       return true;
     }
     function beforeOpen(post) {
+      cancelAuto();
       update();
       const id = String(post?.id ?? '');
       if (!feedKey || !ID.test(id) || !current || !posts().some(item => String(item.id) === id)) return false;
@@ -257,6 +316,7 @@
       return true;
     }
     function open() {
+      cancelAuto();
       update();
       const post = posts().find(candidate => String(candidate.id) === current?.id);
       if (!post || typeof adapter.openPost !== 'function' || !beforeOpen(post)) return false;
@@ -292,13 +352,16 @@
       if (originMarker && !adapter.getDetailId?.() &&
           (nextFeed === originMarker.feedKey ||
            (!nextFeed && (!path || !originMarker.path || path === originMarker.path)))) armReturn();
-      update();
+      cancelAuto();
+      historyPath = path;
+      update(false, true);
     }
     function onKey(event) {
       if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey ||
           event.shiftKey || editableEvent(event) || (adapter.canHandleKey && !adapter.canHandleKey(event))) return;
       const key = normalizeKey(event.key);
       if (!key) return;
+      if ([' ', 'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end'].includes(String(event.key).toLowerCase())) noteInput();
       let handled = false;
       if (key === normalizeKey(keys.origin)) handled = origin();
       else if (key === normalizeKey(keys.next)) handled = step(1);
@@ -312,6 +375,7 @@
       if (started) return;
       started = true;
       win.addEventListener('keydown', onKey, true);
+      for (const type of ['wheel', 'touchmove', 'pointerdown']) win.addEventListener(type, noteInput, { capture: true, passive: true });
       win.addEventListener('scroll', onScroll, { passive: true });
       win.addEventListener('resize', update);
       win.addEventListener('popstate', onPopState);
@@ -324,6 +388,7 @@
       clearReturn();
       started = false;
       win.removeEventListener('keydown', onKey, true);
+      for (const type of ['wheel', 'touchmove', 'pointerdown']) win.removeEventListener(type, noteInput, true);
       win.removeEventListener('scroll', onScroll);
       win.removeEventListener('resize', update);
       win.removeEventListener('popstate', onPopState);

@@ -23,7 +23,7 @@ function fixture(t, options = {}) {
     },
     removeEventListener(type, fn) { if (listeners.get(type) === fn) listeners.delete(type); },
     scrollBy(request) { events.push(['scroll', request.top]); state.y += request.top; },
-    setTimeout, clearTimeout
+    setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout
   };
   const reader = init({
     window: fakeWindow,
@@ -40,6 +40,7 @@ function fixture(t, options = {}) {
     onProgress: snapshot => positions.push(snapshot),
     onBoundary: (kind, snapshot) => boundaries.push([kind, snapshot]),
     canHandleKey: options.canHandleKey,
+    openSaved: options.openSaved,
   });
   reader.start();
   t.after(() => reader.stop());
@@ -55,24 +56,68 @@ function key(listeners, value, props = {}) {
   return [prevented, stopped];
 }
 
-test('loads an exact per-feed anchor without automatic jumps or saves; never approximates absent ID by index', async t => {
+test('auto-resumes the exact feed anchor once without writing it; never approximates an absent ID', async t => {
   const f = fixture(t, { load: key => ({ id: key === 'home:following' ? '33' : '99', index: 1, offset: 60 }) });
   await tick();
   assert.equal(f.reader.getProgress().saved.id, '33');
-  assert.equal(f.reader.getProgress().current.id, '11');
-  assert.deepEqual(f.saves, []);
-  assert.deepEqual(f.events, []);
-  assert.equal(f.reader.resume(), true);
-  assert.deepEqual(f.events, [['scroll', 640]]);
   assert.equal(f.reader.getProgress().current.id, '33');
+  assert.deepEqual(f.saves, []);
+  assert.deepEqual(f.events, [['scroll', 640]]);
   assert.deepEqual(f.boundaries.map(x => x[0]), ['saved']);
+  f.state.y = 620;
+  f.reader.refresh();
+  assert.deepEqual(f.events, [['scroll', 640]]);
   f.state.feed = 'home:for-you'; f.state.y = 0;
   f.reader.refresh();
   await tick();
-  assert.equal(f.reader.resume(), false);
   assert.deepEqual(f.loads, ['home:following', 'home:for-you']);
   assert.deepEqual(f.events, [['scroll', 640]]);
-  assert.equal(f.boundaries.at(-1)[0], 'missing');
+});
+
+test('an exact anchor may mount later, but deliberate scroll input or browser Back wins', async t => {
+  const f = fixture(t, { state: { ids: ['11', '22'], path: '/home' }, load: () => ({id:'33', offset:60}) });
+  await tick();
+  assert.deepEqual(f.events, []);
+  f.state.ids.push('33');
+  f.reader.update();
+  assert.deepEqual(f.events, [['scroll', 640]]);
+  f.state.feed = 'home:for-you'; f.state.y = 0; f.state.ids = ['11'];
+  f.reader.update();
+  await tick();
+  f.listeners.get('wheel')();
+  f.state.ids.push('33');
+  f.reader.update();
+  assert.equal(f.state.y, 0);
+  f.state.feed = null; f.state.path = '/explore';
+  f.reader.update();
+  f.state.path = '/home';
+  f.listeners.get('popstate')();
+  f.state.feed = 'home:following';
+  f.reader.update();
+  assert.equal(f.state.y, 0);
+});
+
+test('cold missing anchor opens its exact permalink once after settling, but never after interaction or switching', async t => {
+  for (const condition of ['cold', 'input', 'switch', 'late exact', 'back']) {
+    const openings = [];
+    const timers = new Map();
+    const f = fixture(t, {
+      load: () => ({id:'99', href:'https://x.com/u/status/99', offset:60}),
+      openSaved: (post,key) => openings.push([post.href,key]),
+      setTimeout: (fn,ms) => { const token = Symbol(ms); timers.set(token,fn); return token; },
+      clearTimeout: token => timers.delete(token),
+    });
+    await tick();
+    assert.deepEqual(openings, []);
+    if (condition === 'input') f.listeners.get('pointerdown')();
+    if (condition === 'switch') { f.state.feed = 'list:1'; f.reader.update(); await tick(); }
+    if (condition === 'late exact') f.state.ids.push('99'); // discovered in final timer check
+    if (condition === 'back') f.listeners.get('popstate')();
+    for (const fn of timers.values()) fn();
+    f.reader.update();
+    assert.deepEqual(openings, condition === 'cold' ? [['https://x.com/u/status/99','home:following']] : [], condition);
+    if (condition === 'late exact') assert.equal(f.reader.getProgress().current.id, '99');
+  }
 });
 
 test('keyboard consumes verified actions, never editing, modifiers or unhandled direct details', async t => {
@@ -188,7 +233,7 @@ test('late saved data stays with its feed and live capture does not move the fro
   f.state.feed = 'home:following'; f.state.y = 0;
   f.reader.update();
   f.reader.next();
-  assert.equal(f.saves.at(-1)[1].id, '22');
+  assert.equal(f.saves.at(-1)[1].id, '44');
   assert.equal(f.reader.getProgress().saved.id, '33');
   const oldSignals = f.positions.length;
   f.reader.refresh();

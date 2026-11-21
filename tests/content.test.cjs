@@ -50,13 +50,16 @@ async function harness(settings = {}) {
   docEl.classList={toggle(c,on){if(on) classes.add(c); else classes.delete(c);}};
   let change, observe;
   const frames = [], intervals=[], feedStates=[], writes=[], expanded=[], media=[];
-  const history={back(){}};
+  let adapter;
+  const redirects=[];
+  const history={state:{x:'preserved'},back(){},replaceState(value){this.state=value;}};
+  const loc={origin:'https://x.com',pathname:'/home',assign(href){redirects.push(href)}};
   const context=vm.createContext({
-    URL, Element:E, location:{origin:'https://x.com',pathname:'/home'}, history,
-    document: { body, documentElement:docEl, querySelector:() => col, createElement:t=>new E(t), createElementNS:(_,t)=>new E(t) },
+    URL, Element:E, location:loc, history,
+    document: { body, documentElement:docEl, querySelector:s => s.startsWith('main') ? col : null, createElement:t=>new E(t), createElementNS:(_,t)=>new E(t) },
     XFRTextExpand:{expand(el,id){expanded.push(id)}},
     XFRMedia:{show(el,id){media.push(id)},prune(visible){media.push(visible.size)}},
-    XFRReading: {init(adapter){return {start(){},refresh(){feedStates.push(adapter.getRoute())},setKeys(){},beforeOpen(){}}}},
+    XFRReading: {init(a){adapter=a;return {start(){},refresh(){feedStates.push(a.getRoute())},setKeys(){},beforeOpen(){}}}},
     MutationObserver: class { constructor(fn){observe=fn} observe(){} },
     chrome:{storage:{local:{async get(){return {settings}},async set(data){settings=data.settings;writes.push(settings)}},onChanged:{addListener(fn){change=fn}}}},
     window:{addEventListener(){},innerHeight:750,location:{pathname:'/home'},document:null},
@@ -67,7 +70,7 @@ async function harness(settings = {}) {
   await new Promise(resolve=>setImmediate(resolve));
   const frame=()=>{ for(const fn of frames.splice(0)) fn(); };
   frame();
-  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,classes,expanded,media,update(settings){change({settings:{newValue:settings}},'local');frame()}};
+  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,adapter,redirects,history,classes,expanded,media,update(settings){change({settings:{newValue:settings}},'local');frame()}};
 }
 test('filter decorates only recognized feeds, gives a reason and restores original mode',async()=>{
   const h=await harness({keywords:['抽奖']});
@@ -191,4 +194,17 @@ test('block icon joins the native action row when hydrated without leaving the f
   h.frame();
   assert.ok(h.article.hasAttribute('data-xfr-collapsed'));
   assert.equal(control.hidden,true);
+});
+
+
+test('automatic saved-post fallback is exact, preserves browser state and never redirects twice from one entry',async()=>{
+  const h=await harness();
+  const key='home:following', valid={id:'456',href:'https://x.com/i/web/status/456'};
+  assert.equal(h.adapter.openSaved({...valid,href:'https://evil.example/i/web/status/456'},key),false);
+  assert.equal(h.adapter.openSaved({...valid,id:'455'},key),false);
+  assert.equal(h.adapter.openSaved(valid,'home:for-you'),false);
+  assert.equal(h.adapter.openSaved(valid,key),true);
+  assert.equal(h.history.state.x,'preserved');
+  assert.equal(h.adapter.openSaved(valid,key),false);
+  assert.deepEqual(h.redirects,[valid.href]);
 });
