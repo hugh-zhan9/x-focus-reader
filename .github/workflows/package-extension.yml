@@ -3,7 +3,13 @@ name: Package Chrome extension
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional release tag (e.g. v0.1.0); publish from main only'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -12,6 +18,8 @@ jobs:
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -19,6 +27,26 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
+      - name: Validate the release version
+        id: version
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          tag="$REQUESTED_TAG"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag="$GITHUB_REF_NAME"
+          elif [[ -n "$tag" && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Manual releases must run from main"
+            exit 1
+          fi
+          if [[ -n "$tag" ]]; then
+            version=$(node -p "require('./extension/manifest.json').version")
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$tag" != "v$version" ]]; then
+              echo "::error::The release tag must match the version in extension/manifest.json"
+              exit 1
+            fi
+            printf 'release_tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check syntax and run tests
         run: |
           npm run check
@@ -35,3 +63,37 @@ jobs:
           path: x-focus-reader-chrome.zip
           archive: false
           if-no-files-found: error
+
+  release:
+    needs: package
+    if: needs.package.outputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: x-focus-reader-chrome.zip
+          skip-decompress: true
+      - name: Publish the tested ZIP to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
+        run: |
+          unzip -t x-focus-reader-chrome.zip
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            # Create the tag at the tested commit; never move an existing tag.
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" >/dev/null; then
+              echo "Tag creation did not succeed; verifying the existing tag before proceeding."
+            fi
+          fi
+          tagged_commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::The release tag does not point to the tested commit"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" x-focus-reader-chrome.zip \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "X Focus Reader $RELEASE_TAG" \
+            --notes '下载 Assets 中的 x-focus-reader-chrome.zip，解压后在 chrome://extensions 开启开发者模式并加载解压出的文件夹。'

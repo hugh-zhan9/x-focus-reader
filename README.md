@@ -4,12 +4,12 @@
 
 ## Mac 上安装
 
-1. 登录有仓库访问权限的 GitHub 账号，从 [自动打包](https://github.com/hugh-zhan9/x-focus-reader/actions/workflows/package-extension.yml) 打开最新一次成功的运行，在 **Artifacts** 下载 `x-focus-reader-chrome.zip`，解压。
+1. 登录有仓库访问权限的 GitHub 账号，从 [最新 Release](https://github.com/hugh-zhan9/x-focus-reader/releases/latest) 的 **Assets** 下载 `x-focus-reader-chrome.zip`，解压。
 2. 在 Chrome 打开 `chrome://extensions`，打开右上角「开发者模式」。
 3. 点「加载已解压的扩展程序」，选解压出的 **`x-focus-reader-chrome`** 文件夹（直接包含 `manifest.json`）。
 4. 刷新 `x.com`，从扩展工具栏图标打开设置。在「正在关注」「为你推荐」或 X 列表里试用。若你已经装了类似扩展，首次测试可先停用它以排除快捷键冲突。
 
-每次推送到 `main` 都会运行测试并生成安装包，也可以在 Actions 手动运行。产物到期后可重新运行。若之前已安装，备份规则后用新包内容替换原安装目录，再到扩展页点「重新加载」；不要另装一份，否则不会沿用原来的本地数据。也可以从源码加载仓库里的 `extension` 文件夹。
+想试用最新提交，可从 [自动打包](https://github.com/hugh-zhan9/x-focus-reader/actions/workflows/package-extension.yml) 找到最近一次成功的 `main` 运行，在 **Artifacts** 下载。若之前已安装，备份规则后用新包内容替换原安装目录，再到扩展页点「重新加载」；不要另装一份，否则不会沿用原来的本地数据。也可以从源码加载仓库里的 `extension` 文件夹。
 
 ## 功能
 
@@ -33,5 +33,7 @@
 npm run check
 npm test
 ```
+
+发布新版本时，更新 `extension/manifest.json` 和 `package.json` 的版本。推送与扩展版本一致的 `vX.Y.Z` 标签，或从 `main` 手动运行自动打包并填写 `release_tag`。测试和打包通过后，GitHub Actions 会将 ZIP 附到 GitHub Release。
 
 Chrome 中的手工回归：加载扩展，开启「正在关注」，在一条普通帖点开详情并返回；切换「为你推荐」再切回；滚动到加载新帖后按 J/K/Enter；在搜索框中输入同样字母；永久/24 小时屏蔽一位作者然后撤销；看一个引用帖以验证引文设置。关闭/重开页面验证恢复提示不会强制滚动。
