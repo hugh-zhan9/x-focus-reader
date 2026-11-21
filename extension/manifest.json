@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "X Focus Reader",
+  "description": "本地过滤、阅读进度、原位返回和键盘浏览。仅作用于 X。",
+  "version": "0.1.0",
+  "permissions": ["storage"],
+  "action": {"default_title": "X Focus Reader · 设置"},
+  "background": {"service_worker": "background.js"},
+  "options_ui": {"page": "options.html", "open_in_tab": true},
+  "content_scripts": [{
+    "matches": ["https://x.com/*"],
+    "js": ["rules.js", "reading.js", "content.js"],
+    "css": ["content.css"],
+    "run_at": "document_idle"
+  }]
+}

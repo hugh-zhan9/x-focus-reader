@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>X Focus Reader 设置</title>
+  <link rel="stylesheet" href="options.css">
+  <script src="rules.js" defer></script>
+  <script src="reading.js" defer></script>
+  <script src="options.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="page-header">
+    <span class="brand-mark" aria-hidden="true">X<span>.</span></span>
+    <div><p class="eyebrow">X FOCUS READER</p><h1>阅读设置</h1><p>只改变你在 X 网页上看到的内容，不改变 X 的拉黑、关注关系。</p></div>
+  </header>
+  <p id="status" class="notice" role="status" aria-atomic="true"></p>
+  <section aria-labelledby="reading-title">
+    <h2 id="reading-title">阅读模式与快捷键</h2>
+    <p>选择一个阅读模式。切换模式不会删除过滤规则。</p>
+    <form id="reading-form">
+      <fieldset class="presets"><legend>阅读模式</legend>
+        <label><input type="radio" name="preset" value="following"><span><strong>关注</strong><small>保留关注流的阅读体验</small></span></label>
+        <label><input type="radio" name="preset" value="clean"><span><strong>清爽</strong><small>使用本地规则整理时间线</small></span></label>
+        <label><input type="radio" name="preset" value="original"><span><strong>原版</strong><small>暂不隐藏原网页的帖子</small></span></label>
+      </fieldset>
+      <fieldset class="shortcuts"><legend>键盘快捷键</legend>
+        <label class="check"><input id="shortcuts-enabled" type="checkbox">启用键盘快捷键</label>
+        <p id="shortcut-help">填单个字母、数字或受支持的功能键，留空停用。输入文字时不会拦截快捷键。</p>
+        <div class="fields">
+          <label>下一条<input id="key-next" type="text" maxlength="16" spellcheck="false" aria-describedby="shortcut-help"></label>
+          <label>上一条<input id="key-previous" type="text" maxlength="16" spellcheck="false" aria-describedby="shortcut-help"></label>
+          <label>打开帖子<input id="key-open" type="text" maxlength="16" spellcheck="false" aria-describedby="shortcut-help"></label>
+          <label>返回时间线<input id="key-back" type="text" maxlength="16" spellcheck="false" aria-describedby="shortcut-help"></label>
+        </div>
+      </fieldset>
+      <div class="actions"><button type="submit" disabled>保存阅读设置</button></div>
+    </form>
+  </section>
+  <section aria-labelledby="blacklist-title">
+    <h2 id="blacklist-title">本地黑名单</h2>
+    <p>永久隐藏或隐藏 24 小时。也可在帖子上的「阅读规则」菜单操作。</p>
+    <form id="blacklist-form">
+      <div class="fields block-fields">
+        <label>X 用户名<input id="blocked-handle" type="text" placeholder="@用户名" required maxlength="64" spellcheck="false" autocomplete="off"></label>
+        <label>隐藏时长<select id="block-duration"><option value="permanent">永久</option><option value="day">24 小时</option></select></label>
+        <button type="submit" disabled>添加到黑名单</button>
+      </div>
+    </form>
+    <p id="blacklist-empty" hidden>没有生效中的黑名单规则。</p>
+    <ul id="blacklist" class="blacklist"></ul>
+  </section>
+  <section aria-labelledby="rules-title">
+    <h2 id="rules-title">内容过滤</h2>
+    <p>命中后的帖子会折叠，并显示原因。关键词按字面包含匹配，话题按完整标签匹配。</p>
+    <form id="rules-form">
+      <label class="check"><input id="filter-quoted" type="checkbox">同时折叠引用了黑名单作者的帖子</label>
+      <div class="fields rule-fields">
+        <label>关键词（每行一个）<textarea id="keywords" rows="5" spellcheck="false"></textarea></label>
+        <label>话题（每行一个）<textarea id="topics" rows="5" placeholder="#话题" spellcheck="false"></textarea></label>
+        <label>账号白名单（每行一个）<textarea id="whitelisted" rows="5" placeholder="@用户名" spellcheck="false" aria-describedby="whitelist-help"></textarea></label>
+      </div>
+      <p id="whitelist-help">白名单只跳过内容规则，不会绕过黑名单。</p>
+      <fieldset class="media"><legend>需要折叠的内容类型</legend>
+        <label><input type="checkbox" name="media" value="image">图片</label>
+        <label><input type="checkbox" name="media" value="video">视频</label>
+        <label><input type="checkbox" name="media" value="gif">GIF</label>
+        <label><input type="checkbox" name="media" value="link">链接</label>
+        <label><input type="checkbox" name="media" value="text">纯文本</label>
+      </fieldset>
+      <div class="actions"><button type="submit" disabled>保存内容规则</button></div>
+    </form>
+  </section>
+  <section aria-labelledby="backup-title">
+    <h2 id="backup-title">备份与恢复</h2>
+    <p>备份只包含规则、阅读模式和快捷键，不包括阅读位置或账号凭据。导入前会让你确认替换范围。</p>
+    <div class="actions"><button id="export" type="button" class="secondary" disabled>导出 JSON</button>
+      <label class="file-picker">选择 JSON 文件<input id="import" type="file" accept=".json,application/json" disabled></label></div>
+  </section>
+  <footer>设置只保存在当前 Chrome 个人资料；切换 X 账号不会切换这份规则。</footer>
+</main>
+<dialog id="import-dialog" aria-labelledby="import-title" aria-describedby="import-detail">
+  <h2 id="import-title">确认导入设置</h2>
+  <p id="import-detail"></p>
+  <p>这会替换现有的规则、阅读模式和快捷键，未保存的编辑也会丢失。阅读位置不受影响。</p>
+  <div class="actions"><button id="cancel-import" type="button" class="secondary" autofocus>取消</button><button id="confirm-import" type="button">替换设置</button></div>
+</dialog>
+</body>
+</html>

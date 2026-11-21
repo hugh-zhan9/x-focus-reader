@@ -1,0 +1,19 @@
+.xfr { color-scheme: light dark; font: 13px/1.45 system-ui, sans-serif; color: CanvasText; }
+.xfr button,.xfr a { font: inherit; }
+.xfr button { background: Canvas; color: CanvasText; border: 1px solid GrayText; border-radius: .45rem; padding: .28rem .55rem; cursor:pointer; }
+.xfr :focus-visible { outline: 2px solid #1786c9; outline-offset: 2px; }
+.xfr-filter,.xfr-boundary {display:block; padding: .55rem .9rem; border-block-end: 1px solid color-mix(in srgb, CanvasText 23%, transparent);}
+.xfr-filter button { margin-inline-start: .55rem; }
+.xfr-boundary {border-block-start:2px solid #1786c9; font-weight: 600; }
+article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
+.xfr-control {position: relative; display:block; margin: 0 .85rem .45rem; inline-size: fit-content;}
+.xfr-control summary {cursor:pointer; text-decoration: underline; }
+.xfr-control > div {display:flex; flex-wrap: wrap; gap:.35rem; padding:.35rem 0;}
+.xfr-panel {position:fixed; z-index:20; inset-inline-end: min(3vw, 22px); inset-block-end:18px; display:grid; gap:.35rem; padding:.65rem; border:1px solid GrayText; border-radius:.65rem; background: Canvas; box-shadow:0 3px 18px #0003; max-inline-size:min(335px,80vw);}
+.xfr-panel [hidden] {display:none!important;}
+.xfr-panel div {display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;}
+.xfr-hidden {display:none!important;}
+.xfr-clean main [data-testid="sidebarColumn"] { visibility:hidden !important; pointer-events:none !important; }
+.xfr-current { outline: 2px solid #1786c9 !important; outline-offset: -2px; }
+.xfr[hidden], .xfr [hidden] {display:none!important;}
+.xfr-reader-position {inset-block-end: min(12vh, 90px);}
