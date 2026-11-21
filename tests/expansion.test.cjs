@@ -15,9 +15,13 @@ class El {
   constructor(tag, attrs, kids) {
     this.tag=tag; this.attrs=attrs; this.children=[]; this.parentElement=null;
     this.isConnected=true; this.handlers={}; this.clicks=0;
-    this.ownerDocument={createElement:make};
+    this.ownerDocument={createElement:make, defaultView:{getComputedStyle(el) {
+      return el.geometry || {display:'block',position:'static',overflowY:'visible'};
+    }}};
+    this.rect={width:0,height:0,top:0,bottom:0};
     this.append(...kids);
   }
+  getBoundingClientRect() { return this.rect; }
   get textContent() { return this.children.map(c => c.textContent).join(''); }
   append(...nodes) { for (const node of nodes) { node.remove(); node.parentElement=this; this.children.push(node); } }
   insertBefore(node, ref) { node.remove(); node.parentElement=this; this.children.splice(this.children.indexOf(ref),0,node); }
@@ -53,12 +57,13 @@ function slide(index, src, post='12', extra={}) {
   ]);
 }
 const src = (id,name='small') => 'https://pbs.twimg.com/media/img'+id+'?format=png&name='+name;
+const body = () => make('div',{'data-testid':'tweetText'});
 const findGallery = a => a.children.find(n=>n.className==='xfr xfr-gallery');
 
 test('carousel photos become a single natural-size inline stack in photo order, retaining native links',()=>{
   const first=slide(1,src(1,'thumb')), second=slide(2,src(2));
   const carousel=make('div',{'data-testid':'ScrollSnap-List'},[second,first]);
-  const a=article(make('div',{},[carousel]),make('button'));
+  const a=article(body(),make('div',{},[carousel]),make('button'));
   media.show(a,'12',origin);
   const inline=findGallery(a);
   assert.ok(inline);
@@ -79,7 +84,7 @@ test('carousel photos become a single natural-size inline stack in photo order, 
 
 test('single long photo keeps a non-cropped source; errors restore the original without remount loops',()=>{
   const native=make('div',{},[slide(1,src(1,'240x240'))]);
-  const a=article(native);
+  const a=article(body(),native);
   media.show(a,'12',origin);
   const img=findGallery(a).children[0].children[0];
   assert.equal(img.src,src(1,'large'));
@@ -91,12 +96,12 @@ test('single long photo keeps a non-cropped source; errors restore the original 
 });
 
 test('partial carousels, quoted/foreign media and gated media keep native rendering',()=>{
-  const a=article(make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1))]));
-  const b=article(make('div',{'data-testid':'quoteTweet'},[slide(1,src(1))]));
-  const c=article(slide(1,src(1)),make('div',{'data-testid':'sensitiveMediaWarning'}));
-  const d=article(slide(1,'https://evil.example/media/a?name=thumb'));
-  const e=article(make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1)),slide(2,src(2)),make('a',{href:'/example/status/12/photo/3'})]));
-  const f=article(make('div',{},[slide(1,src(1)),slide(2,src(2)),make('video')]));
+  const a=article(body(),make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1))]));
+  const b=article(body(),make('div',{'data-testid':'quoteTweet'},[slide(1,src(1))]));
+  const c=article(body(),slide(1,src(1)),make('div',{'data-testid':'sensitiveMediaWarning'}));
+  const d=article(body(),slide(1,'https://evil.example/media/a?name=thumb'));
+  const e=article(body(),make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1)),slide(2,src(2)),make('a',{href:'/example/status/12/photo/3'})]));
+  const f=article(body(),make('div',{},[slide(1,src(1)),slide(2,src(2)),make('video')]));
   for(const item of [a,b,c,d,e,f]) {
     media.show(item,'12',origin);
     assert.equal(findGallery(item),undefined);
@@ -122,4 +127,39 @@ test('Show more activates only native inline controls, once for each post after 
   assert.equal(unsafe.clicks,0);
   assert.equal(generic.clicks,0);
   assert.equal(quoted.clicks,0);
+});
+
+
+test('gallery is inserted after the text and outside a constrained, positioned media wrapper',()=>{
+  const text=body();
+  const native=slide(1,src(1));
+  const internal=make('div',{},[native]);
+  internal.geometry={display:'block',position:'absolute',overflowY:'hidden'};
+  const skin=make('div',{},[internal,make('button')]);
+  const action=make('button',{'data-testid':'reply'});
+  const a=article(text,skin,action);
+  media.show(a,'12',origin);
+  const gallery=findGallery(a);
+  assert.deepEqual(a.children,[text,gallery,skin,action]);
+  assert.equal(internal.querySelector('img').getAttribute('src'),src(1));
+  assert.ok(internal.hasAttribute('data-xfr-native-photos'));
+  a.rect={width:600,height:400,top:0,bottom:400};
+  text.rect={width:550,height:80,top:50,bottom:130};
+  action.rect={width:20,height:20,top:370,bottom:390};
+  gallery.rect={width:550,height:500,top:50,bottom:550};
+  gallery.children[0].children[0].handlers.load();
+  assert.deepEqual(a.children,[text,skin,action]);
+  assert.ok(!internal.hasAttribute('data-xfr-native-photos'));
+  media.show(a,'12',origin);
+  assert.equal(findGallery(a),undefined);
+});
+
+test('native layout retained when no safe vertical slot follows the text',()=>{
+  const native=slide(1,src(1));
+  const column=make('div',{},[body(),native]);
+  column.geometry={display:'flex',flexDirection:'row',position:'static',overflowY:'visible'};
+  const a=article(column);
+  media.show(a,'12',origin);
+  assert.equal(a.querySelector('[data-xfr-native-photos]'),null);
+  assert.deepEqual(column.children.map(node=>node.tag),['div','a']);
 });

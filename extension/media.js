@@ -64,9 +64,66 @@
     return {native, items};
   }
 
+  function own(article, selector) {
+    return [...article.querySelectorAll(selector)].find(el =>
+      el.closest('article') === article && !el.closest(excluded + ',div[role="link"]'));
+  }
+
+  function childOf(parent, descendant) {
+    let child = descendant;
+    while (child && child.parentElement !== parent) child = child.parentElement;
+    return child;
+  }
+
+  function findSlot(article, native) {
+    const body = own(article, '[data-testid="tweetText"]') || own(article, '[data-testid="User-Name"]');
+    if (!body) return null;
+    const reply = own(article, '[data-testid="reply"]');
+    const actions = reply?.closest('[role="group"]') || reply;
+    const styleOf = el => article.ownerDocument.defaultView.getComputedStyle(el);
+    for (let branch = native; branch.parentElement; branch = branch.parentElement) {
+      const host = branch.parentElement;
+      if (!article.contains(host)) break;
+      const before = childOf(host, body);
+      if (!before || before === branch) continue;
+      const children = [...host.children];
+      const at = children.indexOf(branch);
+      if (children.indexOf(before) >= at) continue;
+      const after = actions && childOf(host, actions);
+      if (after && children.indexOf(after) <= at) continue;
+      // The gallery must be a sibling of the content branch, never inside
+      // X's absolutely positioned media viewport or a horizontal flex row.
+      const style = styleOf(host);
+      if (!['block', 'flow-root'].includes(style.display) &&
+          !(['flex', 'inline-flex'].includes(style.display) && style.flexDirection === 'column')) continue;
+      let normalFlow = true;
+      for (let el = host; el && el !== article; el = el.parentElement) {
+        const ancestor = styleOf(el);
+        if (['absolute', 'fixed'].includes(ancestor.position) ||
+            ['hidden', 'clip', 'scroll', 'auto'].includes(ancestor.overflowY) || ancestor.contain?.split(' ').some(v => ['size','strict','content','paint'].includes(v))) {
+          normalFlow = false;
+          break;
+        }
+      }
+      if (normalFlow) return {host, branch, body, actions};
+    }
+    return null;
+  }
+
+  function fits(article, gallery, body, actions) {
+    const g = gallery.getBoundingClientRect();
+    if (!g.width || !g.height) return true; // a collapsed or not-yet-loaded card
+    const r = body.getBoundingClientRect();
+    const a = article.getBoundingClientRect();
+    const footer = actions?.getBoundingClientRect();
+    return (!r.height || g.top >= r.bottom - 1) && g.bottom <= a.bottom + 1 &&
+      (!footer?.height || g.bottom <= footer.top + 1);
+  }
+
   function clear(article) {
     const view = mounted.get(article);
     if (!view) return;
+    view.observer?.disconnect();
     view.gallery.remove();
     view.native.removeAttribute(nativeAttr);
     mounted.delete(article);
@@ -76,16 +133,28 @@
     const next = discover(article, postId, origin);
     if (!next) { clear(article); return; }
     const {native, items} = next;
+    const slot = findSlot(article, native);
+    if (!slot) { clear(article); return; }
+    const {host, branch, body, actions} = slot;
     const signature = JSON.stringify(items.map(({href,src,alt}) => [href,src,alt]));
     const previous = mounted.get(article);
     const failed = unavailable.get(article);
-    if (failed?.native === native && failed.signature === signature) { clear(article); return; }
-    if (previous?.native === native && previous.signature === signature && previous.gallery.parentElement === native.parentElement) return;
+    if (failed?.native === native && failed.host === host && failed.signature === signature) { clear(article); return; }
+    if (previous?.native === native && previous.signature === signature && previous.gallery.parentElement === host && previous.branch === branch && previous.body === body && previous.actions === actions) return;
     clear(article);
     const gallery = article.ownerDocument.createElement('div');
     gallery.className = 'xfr xfr-gallery';
     gallery.setAttribute('role','group');
     gallery.setAttribute('aria-label','推文图片');
+    let observer;
+    const restore = () => {
+      if (mounted.get(article)?.gallery !== gallery) return;
+      unavailable.set(article, {native, host, signature});
+      clear(article);
+    };
+    const check = () => {
+      if (mounted.get(article)?.gallery === gallery && !fits(article, gallery, body, actions)) restore();
+    };
     for (const {anchor, href, src, alt, index} of items) {
       const link = article.ownerDocument.createElement('a');
       link.href = href;
@@ -93,12 +162,8 @@
       image.alt = alt || '图片 ' + index;
       image.loading = 'lazy';
       image.decoding = 'async';
-      image.addEventListener('error', () => {
-        if (mounted.get(article)?.gallery === gallery) {
-          unavailable.set(article, {native, signature});
-          clear(article);
-        }
-      }, {once:true});
+      image.addEventListener('error', restore, {once:true});
+      image.addEventListener('load', check, {once:true});
       image.src = src;
       link.append(image);
       link.addEventListener('click', event => {
@@ -110,9 +175,15 @@
       });
       gallery.append(link);
     }
-    native.parentElement.insertBefore(gallery, native);
+    host.insertBefore(gallery, branch);
     native.setAttribute(nativeAttr, '');
-    mounted.set(article, {native, gallery, signature});
+    const Resize = article.ownerDocument.defaultView.ResizeObserver;
+    if (Resize) {
+      observer = new Resize(check);
+      for (const el of [gallery, body, article, actions].filter(Boolean)) observer.observe(el);
+    }
+    mounted.set(article, {native, gallery, signature, observer, branch, body, actions});
+    check();
   }
 
   function prune(visible) {

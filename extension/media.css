@@ -1,5 +1,5 @@
 html.xfr-wide [data-xfr-native-photos] { display: none !important; }
-.xfr-gallery { display: grid; gap: .45rem; min-inline-size: 0; align-items: start; }
+.xfr-gallery { position: static; display: grid; inline-size: 100%; align-self: stretch; flex: 0 0 auto; gap: .45rem; min-inline-size: 0; align-items: start; }
 .xfr-gallery a { display: block; min-inline-size: 0; }
 .xfr-gallery img { display: block; inline-size: auto; max-inline-size: 100%; block-size: auto; max-block-size: none; border-radius: .6rem; }
 html:not(.xfr-wide) .xfr-gallery { display: none !important; }
