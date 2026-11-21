@@ -4,10 +4,12 @@
 
 ## Mac 上安装
 
-1. 下载或克隆仓库。下载 ZIP 的话，先解压。
+1. 登录有仓库访问权限的 GitHub 账号，从 [自动打包](https://github.com/hugh-zhan9/x-focus-reader/actions/workflows/package-extension.yml) 打开最新一次成功的运行，在 **Artifacts** 下载 `x-focus-reader-chrome.zip`，解压。
 2. 在 Chrome 打开 `chrome://extensions`，打开右上角「开发者模式」。
-3. 点「加载已解压的扩展程序」，选仓库中的 **`extension`** 文件夹（该文件夹直接包含 `manifest.json`）。
+3. 点「加载已解压的扩展程序」，选解压出的 **`x-focus-reader-chrome`** 文件夹（直接包含 `manifest.json`）。
 4. 刷新 `x.com`，从扩展工具栏图标打开设置。在「正在关注」「为你推荐」或 X 列表里试用。若你已经装了类似扩展，首次测试可先停用它以排除快捷键冲突。
+
+每次推送到 `main` 都会运行测试并生成安装包，也可以在 Actions 手动运行。产物到期后可重新运行。若之前已安装，备份规则后用新包内容替换原安装目录，再到扩展页点「重新加载」；不要另装一份，否则不会沿用原来的本地数据。也可以从源码加载仓库里的 `extension` 文件夹。
 
 ## 功能
 
