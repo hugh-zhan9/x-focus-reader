@@ -42,7 +42,8 @@ function fixture(t, options = {}) {
     onBoundary: (kind, snapshot) => boundaries.push([kind, snapshot]),
     canHandleKey: options.canHandleKey,
     loadCheckpoint: options.loadCheckpoint,
-    saveCheckpoint: options.saveCheckpoint,
+    loadTabCheckpoint: options.loadTabCheckpoint,
+    saveTabCheckpoint: options.saveTabCheckpoint,
     loadReturnCheckpoint: options.loadReturnCheckpoint,
     saveReturnCheckpoint: options.saveReturnCheckpoint,
   });
@@ -155,18 +156,20 @@ test('reload uses the latest same-entry checkpoint even if an earlier storage wr
   const oldDisk = {id:'11', offset:0, updatedAt:1};
   const outgoing = fixture(t, {
     load: () => oldDisk,
-    saveCheckpoint: (key,position) => checkpoints.set(key,position)
+    saveTabCheckpoint: (key,position) => checkpoints.set(key,position)
   });
   await tick();
   outgoing.state.y = 595;
   outgoing.listeners.get('scroll')();
-  assert.deepEqual(outgoing.saves, []); // storage debounce has not fired
+  assert.deepEqual(outgoing.saves, []); // feed-wide debounce has not fired
+  assert.equal(checkpoints.get('home:following').id, '33'); // sent before pagehide
   outgoing.listeners.get('pagehide')();
   assert.equal(checkpoints.get('home:following').id, '33');
   const incoming = fixture(t, {
     navigationType: 'reload',
     state: {ids:['11','22'], y:240},
-    loadCheckpoint: key => checkpoints.get(key),
+    loadCheckpoint: () => ({id:'22',offset:100,updatedAt:1}),
+    loadTabCheckpoint: async key => checkpoints.get(key),
     load: () => oldDisk,
   });
   await tick();
@@ -340,4 +343,21 @@ test('late saved data stays with its feed and live capture does not move the fro
   const oldSignals = f.positions.length;
   f.reader.refresh();
   assert.equal(f.positions.length, oldSignals + 1);
+});
+
+test("reload awaits the tab position before scrolling to a visible stale history or another tab's feed record", async t => {
+  let resolveTab;
+  const f = fixture(t, {
+    navigationType:'reload',
+    loadCheckpoint:() => ({id:'11',offset:20,updatedAt:1}),
+    loadTabCheckpoint:() => new Promise(resolve => { resolveTab = resolve; }),
+    load:() => ({id:'22',offset:45,updatedAt:1000})
+  });
+  await tick();
+  assert.deepEqual(f.events,[]);
+  resolveTab({id:'33',offset:52,scrollY:648,updatedAt:800});
+  await tick();
+  assert.deepEqual(f.events,[['scroll',648]]);
+  assert.equal(f.state.feed,'home:following');
+  assert.equal(f.state.detail,null);
 });

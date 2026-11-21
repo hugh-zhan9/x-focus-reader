@@ -156,8 +156,14 @@
     function stage() {
       if (!feedKey || !current || frozen.get(feedKey)?.status !== 'ready') return false;
       const record = { ...current, updatedAt: now(), scrollY: getY() };
+      const previous = latest.get(feedKey);
       latest.set(feedKey, record);
       unsaved.set(feedKey, record);
+      // Dispatch from the observed scroll, before debounce or teardown. Keep
+      // the slower feed-wide record for new tabs and future browser sessions.
+      if (!previous || previous.id !== record.id || previous.offset !== record.offset || previous.scrollY !== record.scrollY) {
+        try { Promise.resolve(adapter.saveTabCheckpoint?.(feedKey, record)).catch(() => {}); } catch {}
+      }
       return true;
     }
     function cancelAuto() {
@@ -173,19 +179,36 @@
       cancelAuto();
       if (feedKey && pendingReturn) { clearReturn(); originMarker = null; }
     }
-    function startAuto(checkpoint) {
+    function startAuto(checkpoint, reload) {
       const startedAt = now();
-      auto = { expiresAt: startedAt + AUTO_RESUME_MS, probeAfter: startedAt + RELOAD_PROBE_DELAY_MS,
-        y: baselineY, checkpoint, beforeProbe: null };
+      const phase = auto = { expiresAt: startedAt + AUTO_RESUME_MS, probeAfter: startedAt + RELOAD_PROBE_DELAY_MS,
+        y: baselineY, checkpoint, beforeProbe: null, waiting: reload && typeof adapter.loadTabCheckpoint === 'function' };
       autoTimer = win.setTimeout(() => {
         autoTimer = null;
+        if (auto !== phase) return;
+        phase.waiting = false;
         update(false, false, true);
       }, AUTO_RESUME_MS);
-      if (Number.isFinite(checkpoint?.scrollY)) {
-        probeTimer = win.setTimeout(() => {
-          probeTimer = null;
+      const triggerProbe = () => {
+        if (Number.isFinite(phase.checkpoint?.scrollY)) {
+          probeTimer = win.setTimeout(() => {
+            probeTimer = null;
+            if (auto === phase) update();
+          }, Math.max(0, phase.probeAfter - now()));
+        }
+      };
+      if (phase.waiting) {
+        let reading;
+        try { reading = adapter.loadTabCheckpoint(feedKey); } catch {}
+        Promise.resolve(reading).catch(() => null).then(value => {
+          if (auto !== phase) return;
+          phase.checkpoint = savedRecord(value) || phase.checkpoint;
+          phase.waiting = false;
+          triggerProbe();
           update();
-        }, RELOAD_PROBE_DELAY_MS);
+        });
+      } else {
+        triggerProbe();
       }
     }
     function capture() {
@@ -260,10 +283,11 @@
             // A reload can reuse the current entry's exact last position even
             // while native scroll restoration or X's initial layout changes Y.
             let checkpoint = null;
-            if (firstEntry && navigationType === 'reload') {
+            const reload = firstEntry && navigationType === 'reload';
+            if (reload) {
               try { checkpoint = savedRecord(adapter.loadCheckpoint?.(feedKey)); } catch {}
             }
-            startAuto(checkpoint);
+            startAuto(checkpoint, reload);
           }
           firstEntry = false;
           initialHistoryNavigation = false;
@@ -279,7 +303,7 @@
           else boundary('missing-origin');
         }
       }
-      if (auto) {
+      if (auto && !auto.waiting) {
         if (!auto.checkpoint && getY() !== auto.y) cancelAuto();
         else {
           const saved = auto.checkpoint || latest.get(feedKey) || frozen.get(feedKey)?.saved;
@@ -329,11 +353,8 @@
       cancelAuto();
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
       scrollTimer = null;
-      // Extension storage IPC can still be pending when a reload destroys
-      // this content script. Save the last known per-entry anchor synchronously.
-      if (feedKey && adapter.getFeedKey?.() === feedKey && latest.has(feedKey)) {
-        try { adapter.saveCheckpoint?.(feedKey, latest.get(feedKey)); } catch {}
-      }
+      // The tab-private write has already been sent by stage(). The deferred
+      // record still serves new tabs and later browser sessions.
       flush();
     }
     function step(direction) {

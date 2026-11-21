@@ -51,7 +51,7 @@ async function harness(settings = {}) {
   let change, observe;
   const frames = [], intervals=[], feedStates=[], writes=[], expanded=[], media=[];
   let adapter;
-  const redirects=[];
+  const redirects=[], messages=[];
   const history={state:{x:'preserved'},back(){},replaceState(value){this.state=value;}};
   const loc={origin:'https://x.com',pathname:'/home',assign(href){redirects.push(href)}};
   const context=vm.createContext({
@@ -61,7 +61,7 @@ async function harness(settings = {}) {
     XFRMedia:{show(el,id){media.push(id)},prune(visible){media.push(visible.size)}},
     XFRReading: {init(a){adapter=a;return {start(){},refresh(){feedStates.push(a.getRoute())},setKeys(){},beforeOpen(){}}}},
     MutationObserver: class { constructor(fn){observe=fn} observe(){} },
-    chrome:{storage:{local:{async get(){return {settings}},async set(data){settings=data.settings;writes.push(settings)}},onChanged:{addListener(fn){change=fn}}}},
+    chrome:{runtime:{sendMessage:async msg=>{messages.push(msg);return {position:{id:'234'}}}},storage:{local:{async get(){return {settings}},async set(data){settings=data.settings;writes.push(settings)}},onChanged:{addListener(fn){change=fn}}}},
     window:{addEventListener(){},innerHeight:750,location:{pathname:'/home'},document:null},
     addEventListener(){},requestAnimationFrame(fn){frames.push(fn); return frames.length},setTimeout(){return 1},clearTimeout(){},setInterval(fn){intervals.push(fn)},console
   });
@@ -70,7 +70,7 @@ async function harness(settings = {}) {
   await new Promise(resolve=>setImmediate(resolve));
   const frame=()=>{ for(const fn of frames.splice(0)) fn(); };
   frame();
-  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,adapter,redirects,history,classes,expanded,media,update(settings){change({settings:{newValue:settings}},'local');frame()}};
+  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,adapter,redirects,messages,history,classes,expanded,media,update(settings){change({settings:{newValue:settings}},'local');frame()}};
 }
 test('filter decorates only recognized feeds, gives a reason and restores original mode',async()=>{
   const h=await harness({keywords:['抽奖']});
@@ -204,17 +204,22 @@ test('the feed offers no automatic permalink redirect or manual resume panel', a
   assert.deepEqual(h.redirects,[]);
 });
 
-test('refresh checkpoint preserves native history state and rejects recycled post links', async () => {
+test('tab refresh uses extension messaging; detail Back preserves native history state', async () => {
   const h = await harness();
   assert.equal(h.adapter.getPosts()[0].id, '123');
   h.anchor.setAttribute('href', '/Example/status/456');
   assert.equal(h.adapter.getPosts().length, 0);
   const saved = {id:'123',offset:49};
-  h.adapter.saveCheckpoint('home:following',saved);
+  await h.adapter.saveTabCheckpoint('home:following',saved);
+  assert.equal((await h.adapter.loadTabCheckpoint('home:following')).id,'234');
+  assert.deepEqual(h.messages.map(m=>m.op),['save','read']);
   assert.equal(h.history.state.x,'preserved');
-  assert.equal(h.adapter.loadCheckpoint('home:following'),saved);
-  assert.equal(h.adapter.loadCheckpoint('home:for-you'),null);
+  assert.equal(h.history.state.xfrReadingCheckpoint,undefined);
+  h.adapter.saveReturnCheckpoint('home:following',saved);
+  assert.equal(h.history.state.x,'preserved');
+  assert.equal(h.adapter.loadReturnCheckpoint('home:following'),saved);
+  assert.equal(h.adapter.loadReturnCheckpoint('home:for-you'),null);
   h.history.state = ['native array'];
-  h.adapter.saveCheckpoint('home:following',saved);
+  h.adapter.saveReturnCheckpoint('home:following',saved);
   assert.deepEqual(h.history.state,['native array']);
 });

@@ -344,8 +344,12 @@
         const checkpoint = history.state?.xfrReadingCheckpoint;
         return checkpoint?.key === key ? checkpoint.position : null;
       },
-      saveCheckpoint(key,position) {
-        writeHistoryEntry('xfrReadingCheckpoint',{key,position});
+      async loadTabCheckpoint(key) {
+        const response = await chrome.runtime.sendMessage({type:'xfr-tab-reading',op:'read',key});
+        return response?.position;
+      },
+      saveTabCheckpoint(key,position) {
+        return chrome.runtime.sendMessage({type:'xfr-tab-reading',op:'save',key,position});
       },
       loadReturnCheckpoint(key) {
         const checkpoint = history.state?.xfrReturnCheckpoint;
