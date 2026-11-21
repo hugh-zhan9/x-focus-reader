@@ -14,6 +14,7 @@ class E {
   querySelector(s) { return this.special?.[s] || this.querySelectorAll(s)[0] || null; }
   querySelectorAll(s) { return this.special?.[s] || []; }
   closest(s) {
+    if(s==='[role="group"]') return this.getAttribute('role')==='group' ? this : this.parentElement?.closest(s);
     if(s==='a') return this.tagName==='a' ? this : this.parentElement?.closest(s);
     if(s==='article'||s==='article[data-testid="tweet"]') return this.tagName==='article'?this:this.parentElement?.closest(s);
     if(s==='.xfr') return this.className.split(' ').includes('xfr') ? this : this.parentElement?.closest(s);
@@ -52,7 +53,7 @@ async function harness(settings = {}) {
   const history={back(){}};
   const context=vm.createContext({
     URL, Element:E, location:{origin:'https://x.com',pathname:'/home'}, history,
-    document: { body, documentElement:docEl, querySelector:() => col, createElement:t=>new E(t) },
+    document: { body, documentElement:docEl, querySelector:() => col, createElement:t=>new E(t), createElementNS:(_,t)=>new E(t) },
     XFRTextExpand:{expand(el,id){expanded.push(id)}},
     XFRMedia:{show(el,id){media.push(id)},prune(visible){media.push(visible.size)}},
     XFRReading: {init(adapter){return {start(){},refresh(){feedStates.push(adapter.getRoute())},setKeys(){},beforeOpen(){}}}},
@@ -113,8 +114,9 @@ test('one visible block button writes a permanent rule and offers undo even afte
   const expiry = Date.now() + 3600000;
   const h = await harness({blockedAuthors:[{handle:'legacy',expiresAt:expiry}]});
   const control = h.article.children.at(-1);
-  assert.equal(control.className, 'xfr xfr-control');
-  assert.deepEqual(control.children.map(el=>[el.tagName,el.textContent]),[['button','屏蔽']]);
+  assert.equal(control.className, 'xfr xfr-control xfr-control-fallback');
+  assert.deepEqual(control.children.map(el=>[el.tagName,el.textContent]),[['button','']]);
+  assert.equal(control.children[0].children[0].tagName,'svg');
   const block = control.children[0];
   assert.equal(block.getAttribute('aria-label'),'屏蔽 @example');
   click(block);
@@ -167,4 +169,26 @@ test('reading enhancements respect native mode, filtered cards and timeline vers
   h.update({preset:'original'});
   assert.ok(!h.classes.has('xfr-wide'));
   assert.equal(h.media.at(-1),0);
+});
+
+
+test('block icon joins the native action row when hydrated without leaving the fallback behind',async()=>{
+  const h=await harness();
+  const fallback=h.article.children.at(-1);
+  const row=new E('div'), reply=new E('button'), like=new E('button');
+  row.setAttribute('role','group');
+  row.special={'[data-testid="like"],[data-testid="unlike"],[data-testid="bookmark"]':like};
+  row.append(reply,like);
+  h.article.special['[data-testid="reply"]']=reply;
+  h.article.append(row);
+  h.observe([{target:h.article,type:'attributes'}]); h.frame();
+  const control=row.children.at(-1);
+  assert.equal(fallback.parentElement,null);
+  assert.equal(control.className,'xfr xfr-control');
+  assert.equal(control.children[0].getAttribute('aria-label'),'屏蔽 @example');
+  click(control.children[0]);
+  await new Promise(setImmediate);
+  h.frame();
+  assert.ok(h.article.hasAttribute('data-xfr-collapsed'));
+  assert.equal(control.hidden,true);
 });

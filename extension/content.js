@@ -149,23 +149,43 @@
     return ownWrites;
   }
 
+  function blockTarget(article) {
+    const row = article.querySelector('[data-testid="reply"]')?.closest('[role="group"]');
+    return row?.closest('article') === article &&
+      row.querySelector('[data-testid="like"],[data-testid="unlike"],[data-testid="bookmark"]') ? row : article;
+  }
+
+  function blockIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M20 12a8 8 0 1 0-16 0 8 8 0 0 0 16 0ZM6.35 6.35l11.3 11.3');
+    svg.append(path);
+    return svg;
+  }
+
   function viewFor(article, post) {
     let view = timeline.get(article);
     const author = Rules.normalizeHandle(post.author);
-    if (view?.id === post.id && view.author === author && view.control.parentElement === article) return view;
+    const target = blockTarget(article);
+    if (view?.id === post.id && view.author === author && view.control.parentElement === target) return view;
     if (view) {
       view.control.remove(); view.box.remove();
       article.removeAttribute('data-xfr-collapsed');
     }
-    const control = node('div', 'xfr xfr-control');
+    const control = node('div', 'xfr xfr-control' + (target === article ? ' xfr-control-fallback' : ''));
     control.hidden = !author;
     if (author) {
-      const block = action('屏蔽', () => {
+      const block = action('', () => {
         const live = parse(article);
-        if (control.parentElement !== article || live?.id !== post.id || live.author !== author) return;
+        if (control.parentElement !== target || control.closest('article') !== article || live?.id !== post.id || live.author !== author) return;
         return changeBlock(author, null);
       });
       block.setAttribute('aria-label', '屏蔽 @' + author);
+      block.title = '屏蔽 @' + author;
+      block.append(blockIcon());
       control.append(block);
     }
     const box = node('div', 'xfr xfr-filter');
@@ -176,7 +196,7 @@
     const unhide = action('取消作者屏蔽', () => changeBlock(author, null, true));
     const allow = action('加入白名单', () => whitelist(author));
     box.append(reason, toggle, unhide, allow);
-    article.append(control);
+    target.append(control);
     view = { id: post.id, control, box, reason, toggle, unhide, allow, override: false, reasons: [], signature: '', author };
     timeline.set(article, view);
     return view;
