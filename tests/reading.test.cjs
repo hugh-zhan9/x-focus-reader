@@ -14,9 +14,10 @@ function fixture(t, options = {}) {
   const state = { y: 0, feed: 'home:following', detail: null, ids: ['11', '22', '33', '44'], back: 0, now: 1_000, ...options.state };
   const fakeWindow = {
     innerHeight: 600,
+    performance: {getEntriesByType: () => [{type: options.navigationType}]},
     get scrollY() { return state.y; },
     get location() { return { pathname: state.path }; },
-    document: { documentElement: {} },
+    document: { documentElement: {scrollHeight: options.scrollHeight} },
     addEventListener(type, fn, capture) {
       if (type === 'keydown') assert.equal(capture, true);
       listeners.set(type, fn);
@@ -40,7 +41,8 @@ function fixture(t, options = {}) {
     onProgress: snapshot => positions.push(snapshot),
     onBoundary: (kind, snapshot) => boundaries.push([kind, snapshot]),
     canHandleKey: options.canHandleKey,
-    openSaved: options.openSaved,
+    loadCheckpoint: options.loadCheckpoint,
+    saveCheckpoint: options.saveCheckpoint,
   });
   reader.start();
   t.after(() => reader.stop());
@@ -97,27 +99,96 @@ test('an exact anchor may mount later, but deliberate scroll input or browser Ba
   assert.equal(f.state.y, 0);
 });
 
-test('cold missing anchor opens its exact permalink once after settling, but never after interaction or switching', async t => {
-  for (const condition of ['cold', 'input', 'switch', 'late exact', 'back']) {
-    const openings = [];
+test('a missing home anchor never opens a detail, and a late exact card gets priority', async t => {
+  for (const hasCard of [false, true]) {
     const timers = new Map();
     const f = fixture(t, {
       load: () => ({id:'99', href:'https://x.com/u/status/99', offset:60}),
-      openSaved: (post,key) => openings.push([post.href,key]),
       setTimeout: (fn,ms) => { const token = Symbol(ms); timers.set(token,fn); return token; },
       clearTimeout: token => timers.delete(token),
     });
     await tick();
-    assert.deepEqual(openings, []);
-    if (condition === 'input') f.listeners.get('pointerdown')();
-    if (condition === 'switch') { f.state.feed = 'list:1'; f.reader.update(); await tick(); }
-    if (condition === 'late exact') f.state.ids.push('99'); // discovered in final timer check
-    if (condition === 'back') f.listeners.get('popstate')();
+    if (hasCard) f.state.ids.push('99');
     for (const fn of timers.values()) fn();
-    f.reader.update();
-    assert.deepEqual(openings, condition === 'cold' ? [['https://x.com/u/status/99','home:following']] : [], condition);
-    if (condition === 'late exact') assert.equal(f.reader.getProgress().current.id, '99');
+    assert.equal(f.state.feed,'home:following');
+    assert.equal(f.state.detail,null);
+    assert.deepEqual(f.events.map(e=>e[0]),hasCard ? ['scroll'] : []);
+    if (hasCard) assert.equal(f.reader.getProgress().current.id,'99');
   }
+});
+
+test('a reload uses an in-page hint only once and rolls it back if the exact post remains missing', async t => {
+  for (const behavior of ['found','missing','interrupted','unreachable']) {
+    const timers = new Map();
+    const f = fixture(t, {
+      navigationType:'reload', state:{ids:['11','22'],y:130},
+      scrollHeight: behavior === 'unreachable' ? 900 : 2400,
+      loadCheckpoint: () => ({id:'99', offset:60, scrollY:750}),
+      setTimeout: (fn,ms) => { timers.set(ms,fn); return ms; },
+      clearTimeout: ms => timers.delete(ms),
+    });
+    await tick();
+    f.state.now += 750;
+    timers.get(750)();
+    assert.equal(f.state.y,behavior === 'unreachable' ? 130 : 750);
+    if (behavior === 'found') {
+      f.state.ids = ['11','22','99'];
+      f.reader.update();
+      assert.equal(f.state.y,640); // exact card offset beats the viewport hint
+    } else if (behavior === 'interrupted') {
+      f.listeners.get('wheel')();
+      assert.equal(timers.has(8000),false);
+      assert.equal(f.state.y,750);
+    } else {
+      timers.get(8000)();
+      assert.equal(f.state.y,130);
+    }
+    assert.equal(f.state.feed,'home:following');
+    assert.equal(f.state.detail,null);
+  }
+});
+
+test('reload uses the latest same-entry checkpoint even if an earlier storage write is pending', async t => {
+  const checkpoints = new Map();
+  const oldDisk = {id:'11', offset:0, updatedAt:1};
+  const outgoing = fixture(t, {
+    load: () => oldDisk,
+    saveCheckpoint: (key,position) => checkpoints.set(key,position)
+  });
+  await tick();
+  outgoing.state.y = 595;
+  outgoing.listeners.get('scroll')();
+  assert.deepEqual(outgoing.saves, []); // storage debounce has not fired
+  outgoing.listeners.get('pagehide')();
+  assert.equal(checkpoints.get('home:following').id, '33');
+  const incoming = fixture(t, {
+    navigationType: 'reload',
+    state: {ids:['11','22'], y:240},
+    loadCheckpoint: key => checkpoints.get(key),
+    load: () => oldDisk,
+  });
+  await tick();
+  assert.equal(incoming.state.y, 240); // no approximation while virtualized
+  incoming.state.y = 100; // browser/native restoration while the feed hydrates
+  incoming.listeners.get('scroll')();
+  incoming.state.ids.push('33');
+  incoming.reader.update();
+  assert.equal(incoming.state.y, 595);
+  assert.deepEqual(incoming.saves, []); // automatic scroll isn't a new position
+  assert.equal(incoming.reader.getProgress().saved.id, '11'); // boundary unchanged
+});
+
+test('reload does not reuse another feed checkpoint or override manual scrolling', async t => {
+  const checkpoints = new Map([['home:following',{id:'33', offset:100}]]);
+  const config = {navigationType:'reload', loadCheckpoint:key => checkpoints.get(key)};
+  const other = fixture(t, {...config,state:{feed:'home:for-you'}});
+  const manual = fixture(t, {...config,state:{ids:['11','22']}});
+  await tick();
+  manual.listeners.get('wheel')();
+  manual.state.ids.push('33');
+  manual.reader.update();
+  assert.deepEqual(manual.events, []);
+  assert.deepEqual(other.events, []);
 });
 
 test('keyboard consumes verified actions, never editing, modifiers or unhandled direct details', async t => {

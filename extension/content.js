@@ -328,12 +328,22 @@
   function readerAdapter() {
     const progressKey = key => 'reading:' + key;
     return {
-      getPosts: () => Array.from(current.values()).filter(post => !post.collapsed),
+      getPosts: () => Array.from(current.values()).filter(post =>
+        !post.collapsed && post.anchor?.isConnected && statusLink(post.anchor)?.id === post.id),
       getFeedKey: () => raw.preset === 'original' ? null : route().feed,
       getDetailId: () => raw.preset === 'original' ? null : route().post,
       getRoute: () => raw.preset === 'original' ? {feed:null,post:null} : route(),
       async load(key) { const slot=progressKey(key); return (await local.get(slot))[slot]; },
       async save(key,value) { await local.set({[progressKey(key)]:value}); },
+      loadCheckpoint(key) {
+        const checkpoint = history.state?.xfrReadingCheckpoint;
+        return checkpoint?.key === key ? checkpoint.position : null;
+      },
+      saveCheckpoint(key,position) {
+        const state = history.state;
+        if (state !== null && (typeof state !== 'object' || Array.isArray(state))) return;
+        history.replaceState({...state, xfrReadingCheckpoint:{key,position}}, '');
+      },
       openPost(post) {
         if (!post?.anchor?.isConnected || statusLink(post.anchor)?.id !== post.id) return false;
         post.anchor.click();
@@ -341,20 +351,6 @@
       },
       goBack: () => history.back(),
       onProgress: renderProgress,
-      openSaved(saved, key) {
-        if (raw.preset === 'original' || route().feed !== key || current.get(saved.id)?.collapsed ||
-            document.querySelector('[role="dialog"][aria-modal="true"],[data-testid="sheetDialog"]')) return false;
-        const target = statusLink({getAttribute: () => saved.href});
-        if (target?.id !== saved.id) return false;
-        try {
-          const state = history.state;
-          if (state !== null && typeof state !== 'object') return false;
-          if (state?.xfrAutoResume === key + ':' + saved.id) return false;
-          history.replaceState({...state, xfrAutoResume:key + ':' + saved.id}, '');
-          location.assign(target.url);
-          return true;
-        } catch { return false; }
-      },
       canHandleKey(ev) {
         if (raw.preset === 'original' || raw.shortcutsEnabled === false) return false;
         const el = ev.target;

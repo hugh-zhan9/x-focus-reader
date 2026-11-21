@@ -22,6 +22,9 @@ article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
 .xfr-clean main [data-testid="sidebarColumn"] { visibility:hidden !important; pointer-events:none !important; }
 .xfr-current { outline: 2px solid #1786c9 !important; outline-offset: -2px; }
 .xfr[hidden], .xfr [hidden] {display:none!important;}
+/* An older script can leave this overlay behind while Chrome reloads an
+   unpacked extension. It is not part of automatic resume. */
+.xfr.xfr-reader-position {display:none!important;}
 
 /* Only widen recognized X layouts on desktop. Keep X's own navigation and
    sidebar in the flex layout; the reading column gives way when space is tight. */
@@ -43,13 +46,15 @@ article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
     max-inline-size:880px !important;
     min-inline-size:0 !important;
   }
-  /* The virtual timeline and its cell can each have their own narrow cap. */
+  /* The virtual timeline can cap both its outer shell and anonymous wrappers
+     inside a cell. Widen only paths to a tweet, not quoted text or media. */
   html.xfr-wide main [data-testid="primaryColumn"]
     :is(div:has(> section[role="region"] [data-testid="cellInnerDiv"]),
         section[role="region"]:has([data-testid="cellInnerDiv"]),
         [id^="urt:"]:has([data-testid="cellInnerDiv"], article[data-testid="tweet"]),
         .r-1ye8kvj:has([data-testid="cellInnerDiv"], article[data-testid="tweet"]),
         [data-testid="cellInnerDiv"]:has(article[data-testid="tweet"]),
+        [data-testid="cellInnerDiv"] div:has(article[data-testid="tweet"]),
         [data-testid="cellInnerDiv"] article[data-testid="tweet"]):not(article *) {
     inline-size:100% !important;
     max-inline-size:none !important;

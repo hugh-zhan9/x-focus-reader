@@ -1,11 +1,12 @@
 /* Timeline position/navigation. Adapters supply the current feed and DOM posts;
- * this module never fetches content, walks browser history, or scrolls to an unloaded post. */
+ * resume never fetches content or navigates away from the timeline. */
 ((global) => {
   'use strict';
 
   const DEFAULT_KEYS = Object.freeze({ next: 'j', previous: 'k', open: 'Enter', origin: 'Escape' });
   const SCROLL_SAVE_MS = 160;
-  const AUTO_RESUME_MS = 3000;
+  const AUTO_RESUME_MS = 8000;
+  const RELOAD_PROBE_DELAY_MS = 750;
   const OPEN_WINDOW_MS = 3000;
   const RETURN_WINDOW_MS = 3000;
   const EDITABLE = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]';
@@ -23,6 +24,7 @@
     const record = { id: String(value.id), index: Math.max(0, Number.isInteger(value.index) ? value.index : 0),
       offset: Math.round(value.offset), updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : 0 };
     if (typeof value.href === 'string') record.href = value.href;
+    if (Number.isFinite(value.scrollY) && value.scrollY >= 0) record.scrollY = Math.round(value.scrollY);
     return record;
   }
 
@@ -47,7 +49,9 @@
     let scrollTimer = null;
     let auto = null;
     let autoTimer = null;
-    let initialHistoryNavigation = win.performance?.getEntriesByType?.('navigation')?.[0]?.type === 'back_forward';
+    let probeTimer = null;
+    const navigationType = win.performance?.getEntriesByType?.('navigation')?.[0]?.type;
+    let initialHistoryNavigation = navigationType === 'back_forward';
     let firstEntry = !initialHistoryNavigation;
     let initialInput = false;
     let historyPath = null;
@@ -150,7 +154,7 @@
     }
     function stage() {
       if (!feedKey || !current || frozen.get(feedKey)?.status !== 'ready') return false;
-      const record = { ...current, updatedAt: now() };
+      const record = { ...current, updatedAt: now(), scrollY: getY() };
       latest.set(feedKey, record);
       unsaved.set(feedKey, record);
       return true;
@@ -159,30 +163,28 @@
       auto = null;
       if (autoTimer !== null) win.clearTimeout(autoTimer);
       autoTimer = null;
+      if (probeTimer !== null) win.clearTimeout(probeTimer);
+      probeTimer = null;
     }
     function noteInput() {
       if (!feedKey && firstEntry) initialInput = true;
       firstEntry = false;
       cancelAuto();
     }
-    function startAuto(cold) {
-      auto = { expiresAt: now() + AUTO_RESUME_MS, y: baselineY };
-      if (!cold || typeof adapter.openSaved !== 'function') return;
+    function startAuto(checkpoint) {
+      const startedAt = now();
+      auto = { expiresAt: startedAt + AUTO_RESUME_MS, probeAfter: startedAt + RELOAD_PROBE_DELAY_MS,
+        y: baselineY, checkpoint, beforeProbe: null };
       autoTimer = win.setTimeout(() => {
-        const pending = auto;
         autoTimer = null;
-        if (!pending) return;
-        if (doc.visibilityState === 'hidden' || now() > pending.expiresAt + 1000) { cancelAuto(); return; }
-        const key = feedKey;
-        const saved = latest.get(key) || frozen.get(key)?.saved;
-        // Re-read route/current DOM so a tab switch or newly mounted exact post wins.
-        // Prevent a tiny scheduling excess from skipping an available anchor.
-        pending.expiresAt = Infinity;
-        update();
-        if (pending !== auto) return;
-        cancelAuto();
-        if (feedKey === key && saved?.href) adapter.openSaved(saved, key);
+        update(false, false, true);
       }, AUTO_RESUME_MS);
+      if (Number.isFinite(checkpoint?.scrollY)) {
+        probeTimer = win.setTimeout(() => {
+          probeTimer = null;
+          update();
+        }, RELOAD_PROBE_DELAY_MS);
+      }
     }
     function capture() {
       cancelAuto();
@@ -199,13 +201,15 @@
     function jump(position) {
       const post = posts().find(entry => String(entry.id) === position.id);
       if (!post) return false;
-      const delta = post.element.getBoundingClientRect().top - position.offset;
+      const rect = post.element.getBoundingClientRect();
+      if (rect.bottom <= rect.top) return false;
+      const delta = rect.top - position.offset;
       if (!Number.isFinite(delta)) return false;
       if (delta !== 0) win.scrollBy({ top: delta, behavior: 'instant' });
       return true;
     }
 
-    function update(force = false, fromHistory = false) {
+    function update(force = false, fromHistory = false, expired = false) {
       const incomingFeed = adapter.getFeedKey?.() || null;
       const rawDetail = String(adapter.getDetailId?.() ?? '');
       const incomingDetail = ID.test(rawDetail) ? rawDetail : null;
@@ -235,7 +239,13 @@
         if (feedKey) {
           beginLoad(feedKey);
           if (!suppressResume && !pendingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
-            startAuto(firstEntry && Math.abs(baselineY) < 20);
+            // A reload can reuse the current entry's exact last position even
+            // while native scroll restoration or X's initial layout changes Y.
+            let checkpoint = null;
+            if (firstEntry && navigationType === 'reload') {
+              try { checkpoint = savedRecord(adapter.loadCheckpoint?.(feedKey)); } catch {}
+            }
+            startAuto(checkpoint);
           }
           firstEntry = false;
           initialHistoryNavigation = false;
@@ -252,12 +262,32 @@
         }
       }
       if (auto) {
-        if (now() > auto.expiresAt || getY() !== auto.y) cancelAuto();
+        if (!auto.checkpoint && getY() !== auto.y) cancelAuto();
         else {
-          const saved = latest.get(feedKey) || frozen.get(feedKey)?.saved;
-          if (saved && jump(saved)) {
+          const saved = auto.checkpoint || latest.get(feedKey) || frozen.get(feedKey)?.saved;
+          if (doc.visibilityState !== 'hidden' && saved && jump(saved)) {
             cancelAuto();
             baselineY = getY();
+          } else if (expired || now() >= auto.expiresAt) {
+            // A virtualizer may render a completely different set after reload.
+            // If the hint didn't bring back the original post, don't leave the
+            // reader on an unrelated one. Never issue a navigation.
+            const restoreY = auto.beforeProbe;
+            cancelAuto();
+            if (restoreY !== null && getY() !== restoreY)
+              win.scrollBy({top: restoreY - getY(), behavior:'instant'});
+            baselineY = getY();
+          } else if (doc.visibilityState !== 'hidden' && auto.checkpoint && auto.beforeProbe === null &&
+              now() >= auto.probeAfter) {
+            const y = auto.checkpoint.scrollY;
+            const root = doc.scrollingElement || doc.documentElement;
+            const maxY = root?.scrollHeight - (root?.clientHeight || win.innerHeight);
+            // Try the old document offset just once, and only if already
+            // reachable. Never scroll to the bottom to force-load more posts.
+            if (Number.isFinite(y) && y <= maxY - 8 && Math.abs(y - getY()) >= 20) {
+              auto.beforeProbe = getY();
+              win.scrollBy({top: y - getY(), behavior:'instant'});
+            }
           }
         }
       }
@@ -272,7 +302,7 @@
     }
     function onScroll() {
       update();
-      if (!feedKey || pendingReturn || Math.abs(getY() - baselineY) < 20 || !stage()) return;
+      if (!feedKey || pendingReturn || auto || Math.abs(getY() - baselineY) < 20 || !stage()) return;
       const key = feedKey;
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
       scrollTimer = win.setTimeout(() => { scrollTimer = null; flush(key); }, SCROLL_SAVE_MS);
@@ -281,6 +311,11 @@
       cancelAuto();
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
       scrollTimer = null;
+      // Extension storage IPC can still be pending when a reload destroys
+      // this content script. Save the last known per-entry anchor synchronously.
+      if (feedKey && adapter.getFeedKey?.() === feedKey && latest.has(feedKey)) {
+        try { adapter.saveCheckpoint?.(feedKey, latest.get(feedKey)); } catch {}
+      }
       flush();
     }
     function step(direction) {

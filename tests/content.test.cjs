@@ -197,14 +197,24 @@ test('block icon joins the native action row when hydrated without leaving the f
 });
 
 
-test('automatic saved-post fallback is exact, preserves browser state and never redirects twice from one entry',async()=>{
-  const h=await harness();
-  const key='home:following', valid={id:'456',href:'https://x.com/i/web/status/456'};
-  assert.equal(h.adapter.openSaved({...valid,href:'https://evil.example/i/web/status/456'},key),false);
-  assert.equal(h.adapter.openSaved({...valid,id:'455'},key),false);
-  assert.equal(h.adapter.openSaved(valid,'home:for-you'),false);
-  assert.equal(h.adapter.openSaved(valid,key),true);
+test('the feed offers no automatic permalink redirect or manual resume panel', async () => {
+  const h = await harness();
+  assert.equal(h.adapter.openSaved,undefined);
+  assert.equal(h.body.children.some(n=>n.className.includes('xfr-reader-position')),false);
+  assert.deepEqual(h.redirects,[]);
+});
+
+test('refresh checkpoint preserves native history state and rejects recycled post links', async () => {
+  const h = await harness();
+  assert.equal(h.adapter.getPosts()[0].id, '123');
+  h.anchor.setAttribute('href', '/Example/status/456');
+  assert.equal(h.adapter.getPosts().length, 0);
+  const saved = {id:'123',offset:49};
+  h.adapter.saveCheckpoint('home:following',saved);
   assert.equal(h.history.state.x,'preserved');
-  assert.equal(h.adapter.openSaved(valid,key),false);
-  assert.deepEqual(h.redirects,[valid.href]);
+  assert.equal(h.adapter.loadCheckpoint('home:following'),saved);
+  assert.equal(h.adapter.loadCheckpoint('home:for-you'),null);
+  h.history.state = ['native array'];
+  h.adapter.saveCheckpoint('home:following',saved);
+  assert.deepEqual(h.history.state,['native array']);
 });

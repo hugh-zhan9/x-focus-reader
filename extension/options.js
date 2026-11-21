@@ -3,6 +3,7 @@
 
   const $ = (id) => document.getElementById(id);
   const rules = globalThis.XFRRules;
+  $("extension-version").textContent = chrome.runtime.getManifest().version;
   const store = chrome.storage.local;
   const inputs = {
     next: $("key-next"), previous: $("key-previous"), open: $("key-open"), origin: $("key-back"),
