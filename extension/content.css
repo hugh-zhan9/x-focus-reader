@@ -6,9 +6,7 @@
 .xfr-filter button { margin-inline-start: .55rem; }
 .xfr-boundary {border-block-start:2px solid #1786c9; font-weight: 600; }
 article[data-xfr-collapsed] > :not(.xfr-filter) {display:none!important;}
-.xfr-control {position: relative; display:block; margin: 0 .85rem .45rem; inline-size: fit-content;}
-.xfr-control summary {cursor:pointer; text-decoration: underline; }
-.xfr-control > div {display:flex; flex-wrap: wrap; gap:.35rem; padding:.35rem 0;}
+.xfr-control {display:block; margin: 0 .85rem .45rem; inline-size: fit-content;}
 .xfr-panel {position:fixed; z-index:20; inset-inline-end: min(3vw, 22px); inset-block-end:18px; display:grid; gap:.35rem; padding:.65rem; border:1px solid GrayText; border-radius:.65rem; background: Canvas; box-shadow:0 3px 18px #0003; max-inline-size:min(335px,80vw);}
 .xfr-panel [hidden] {display:none!important;}
 .xfr-panel div {display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;}

@@ -47,14 +47,14 @@ async function harness(settings = {}) {
   const docEl=new E('html');
   docEl.classList={toggle(){}};
   let change, observe;
-  const frames = [], intervals=[], feedStates=[];
+  const frames = [], intervals=[], feedStates=[], writes=[];
   const history={back(){}};
   const context=vm.createContext({
     URL, Element:E, location:{origin:'https://x.com',pathname:'/home'}, history,
     document: { body, documentElement:docEl, querySelector:() => col, createElement:t=>new E(t) },
     XFRReading: {init(adapter){return {start(){},refresh(){feedStates.push(adapter.getRoute())},setKeys(){},beforeOpen(){}}}},
     MutationObserver: class { constructor(fn){observe=fn} observe(){} },
-    chrome:{storage:{local:{async get(){return {settings}},async set(data){settings=data.settings}},onChanged:{addListener(fn){change=fn}}}},
+    chrome:{storage:{local:{async get(){return {settings}},async set(data){settings=data.settings;writes.push(settings)}},onChanged:{addListener(fn){change=fn}}}},
     window:{addEventListener(){},innerHeight:750,location:{pathname:'/home'},document:null},
     addEventListener(){},requestAnimationFrame(fn){frames.push(fn); return frames.length},setTimeout(){return 1},clearTimeout(){},setInterval(fn){intervals.push(fn)},console
   });
@@ -63,7 +63,7 @@ async function harness(settings = {}) {
   await new Promise(resolve=>setImmediate(resolve));
   const frame=()=>{ for(const fn of frames.splice(0)) fn(); };
   frame();
-  return {article,selected,context,frame,intervals,feedStates,observe,update(settings){change({settings:{newValue:settings}},'local');frame()}};
+  return {article,selected,context,frame,intervals,feedStates,observe,body,writes,anchor,update(settings){change({settings:{newValue:settings}},'local');frame()}};
 }
 test('filter decorates only recognized feeds, gives a reason and restores original mode',async()=>{
   const h=await harness({keywords:['抽奖']});
@@ -98,4 +98,52 @@ test('recycled article without a valid anchor loses stale fold state',async()=>{
   h.observe([{target:h.article,type:'attributes'}]); h.frame();
   assert.equal(h.article.hasAttribute('data-xfr-collapsed'),false);
   assert.equal(h.article.children.length,2);
+});
+
+function click(button) {
+  let stopped = false;
+  button.handlers.click({stopPropagation(){stopped=true}});
+  assert.ok(stopped);
+}
+
+test('one visible block button writes a permanent rule and offers undo even after a double click', async()=>{
+  const expiry = Date.now() + 3600000;
+  const h = await harness({blockedAuthors:[{handle:'legacy',expiresAt:expiry}]});
+  const control = h.article.children.at(-1);
+  assert.equal(control.className, 'xfr xfr-control');
+  assert.deepEqual(control.children.map(el=>[el.tagName,el.textContent]),[['button','屏蔽']]);
+  const block = control.children[0];
+  assert.equal(block.getAttribute('aria-label'),'屏蔽 @example');
+  click(block);
+  click(block);
+  await new Promise(setImmediate);
+  h.frame();
+  assert.equal(h.writes.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[0].blockedAuthors)),[
+    {handle:'example',expiresAt:null},{handle:'legacy',expiresAt:expiry}
+  ]);
+  assert.equal(h.article.hasAttribute('data-xfr-collapsed'),true);
+  assert.equal(control.hidden,true);
+  const row = h.body.children.find(el=>el.getAttribute('aria-label')==='X Focus Reader 消息').children[0];
+  assert.match(row.children[0].textContent,/已屏蔽 @example/);
+  const undo = row.children[1].children[0];
+  assert.equal(undo.textContent,'撤销');
+  click(undo);
+  await new Promise(setImmediate);
+  h.frame();
+  assert.equal(h.article.hasAttribute('data-xfr-collapsed'),false);
+  assert.equal(control.hidden,false);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.writes[1].blockedAuthors)),[{handle:'legacy',expiresAt:expiry}]);
+});
+
+test('a recycled post button cannot block the former author', async()=>{
+  const h = await harness();
+  const block = h.article.children.at(-1).children[0];
+  h.anchor.setAttribute('href','/NewAuthor/status/999');
+  click(block);
+  await new Promise(setImmediate);
+  assert.equal(h.writes.length,0);
+  h.observe([{target:h.anchor,type:'attributes'}]); h.frame();
+  const next = h.article.children.at(-1).children[0];
+  assert.equal(next.getAttribute('aria-label'),'屏蔽 @newauthor');
 });

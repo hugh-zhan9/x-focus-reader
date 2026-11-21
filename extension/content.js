@@ -119,13 +119,14 @@
       const prior = parsed.blockedAuthors.find(entry => entry.handle === handle);
       if (expectedExpiry !== undefined &&
           (!prior || prior.expiresAt !== expectedExpiry)) return;
+      if (expectedExpiry === undefined && !remove && prior?.expiresAt === null) return;
       const blockedAuthors = parsed.blockedAuthors.filter(entry => entry.handle !== handle);
       if (!remove) blockedAuthors.unshift({handle, expiresAt});
       const next = {...settings, blockedAuthors:Rules.normalizeSettings({blockedAuthors}).blockedAuthors};
       await local.set({settings: next});
       onSettings(next);
       if (expectedExpiry !== undefined) announce('已撤销本次屏蔽。');
-      else if (!remove) announce('已屏蔽 @' + handle + (expiresAt ? '（24 小时）' : ''), () =>
+      else if (!remove) announce('已屏蔽 @' + handle, () =>
         changeBlock(handle, prior?.expiresAt ?? null, !prior, expiresAt));
     });
     return ownWrites;
@@ -150,21 +151,23 @@
 
   function viewFor(article, post) {
     let view = timeline.get(article);
-    if (view?.id === post.id && view.control.parentElement === article) return view;
+    const author = Rules.normalizeHandle(post.author);
+    if (view?.id === post.id && view.author === author && view.control.parentElement === article) return view;
     if (view) {
       view.control.remove(); view.box.remove();
       article.removeAttribute('data-xfr-collapsed');
     }
-    const control = node('details', 'xfr xfr-control');
-    const summary = node('summary','', '阅读规则');
-    const actions = node('div');
-    const author = Rules.normalizeHandle(post.author);
-    if (author) actions.append(
-      action('隐藏 @' + author, () => changeBlock(author, null)),
-      action('隐藏 24 小时', () => changeBlock(author, Date.now() + 86400000))
-    );
-    control.append(summary, actions);
-    control.addEventListener('click', e => e.stopPropagation());
+    const control = node('div', 'xfr xfr-control');
+    control.hidden = !author;
+    if (author) {
+      const block = action('屏蔽', () => {
+        const live = parse(article);
+        if (control.parentElement !== article || live?.id !== post.id || live.author !== author) return;
+        return changeBlock(author, null);
+      });
+      block.setAttribute('aria-label', '屏蔽 @' + author);
+      control.append(block);
+    }
     const box = node('div', 'xfr xfr-filter');
     const reason = node('span');
     const toggle = action('展开帖子', () => {
@@ -191,6 +194,8 @@
       view.unhide.hidden = !view.author || !reasons.some(r => r.id === 'blocked-author');
       view.allow.hidden = !view.author || !reasons.some(r => !r.id.startsWith('blocked-'));
     }
+    const hideBlock = !view.author || reasons.some(r => r.id === 'blocked-author');
+    if (view.control.hidden !== hideBlock) view.control.hidden = hideBlock;
     const collapsed = reasons.length > 0 && !view.override;
     if (collapsed !== article.hasAttribute('data-xfr-collapsed'))
       article.toggleAttribute('data-xfr-collapsed', collapsed);

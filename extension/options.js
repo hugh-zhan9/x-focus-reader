@@ -93,7 +93,7 @@
       const remove = document.createElement("button");
       name.textContent = "@" + entry.handle;
       expiry.textContent = entry.expiresAt === null
-        ? "永久隐藏"
+        ? "已屏蔽"
         : new Date(entry.expiresAt).toLocaleString("zh-CN", {dateStyle: "short", timeStyle: "short"}) + " 到期";
       description.append(name, expiry);
       remove.type = "button";
@@ -201,17 +201,16 @@
     const input = $("blocked-handle");
     const handle = rules.normalizeHandle(input.value);
     if (!handle) throw new Error("请输入有效的 X 用户名（字母、数字或下划线，最多 15 个字符）。");
-    const expiresAt = $("block-duration").value === "day" ? Date.now() + 86400000 : null;
     const next = await write(current => {
       const blockedAuthors = rules.normalizeSettings(current).blockedAuthors.filter(item =>
         item.handle !== handle && (item.expiresAt === null || item.expiresAt > Date.now())
       );
       if (blockedAuthors.length >= maxRules) throw new Error("黑名单已满，请先移除不需要的账号。");
-      return {blockedAuthors: [...blockedAuthors, {handle, expiresAt}]};
+      return {blockedAuthors: [...blockedAuthors, {handle, expiresAt: null}]};
     });
     input.value = "";
     renderBlacklist(next);
-    status("已" + (expiresAt === null ? "永久隐藏" : "隐藏 24 小时：") + "@" + handle + "。");
+    status("已屏蔽 @" + handle + "。");
   });
 
   submit("reading-form", "reading", async edit => {

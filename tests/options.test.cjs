@@ -20,13 +20,14 @@ const c=vm.createContext({document:{getElementById:get,createElement:t=>new El(t
  return ['reading-form','rules-form','blacklist-form'].map(id=>get(id).button).concat(get('export'),get('import'));
 }},chrome:{storage:{local:{async get(key){return {[key]:nodes[key]}},async set(data){const oldValue=nodes.settings;Object.assign(nodes,data);writes++;listener({settings:{oldValue,newValue:nodes.settings}},'local')}},onChanged:{addListener(l){listener=l}}}},Date});
 for(const file of ['rules.js','reading.js','options.js'])vm.runInContext(fs.readFileSync(dir+'/'+file,'utf8'),c);
-test('settings: expiry, shortcut validation, rule writes and confirmed isolated import',async()=>{
+test('settings: permanent block, shortcut validation, rule writes and confirmed isolated import',async()=>{
  await new Promise(setImmediate);
  assert.equal(get('key-next').value,'j');
- get('blocked-handle').value='@MixedCase';get('block-duration').value='day';
+ get('blocked-handle').value='@MixedCase';
  await get('blacklist-form').fire('submit');
  assert.equal(nodes.settings.blockedAuthors[0].handle,'mixedcase');
- assert(nodes.settings.blockedAuthors[0].expiresAt>Date.now());
+ assert.equal(nodes.settings.blockedAuthors[0].expiresAt,null);
+ assert.match(get('status').textContent,/已屏蔽 @mixedcase/);
  get('key-next').value='k';
  await get('reading-form').fire('submit');
  assert.match(get('status').textContent,/同一个/);
