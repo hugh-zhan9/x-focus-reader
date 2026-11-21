@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>X Focus Reader</title>
+  <desc>Two blue focus corners around two lines of text.</desc>
+  <defs>
+    <linearGradient id="tile" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#233A57"/>
+      <stop offset="1" stop-color="#111B2E"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="27" fill="url(#tile)" stroke="#536C88" stroke-width="2"/>
+  <path d="M28 43V36a8 8 0 0 1 8-8h11m34 72h11a8 8 0 0 0 8-8V85"
+        fill="none" stroke="#57DAFF" stroke-width="10" stroke-linecap="round"/>
+  <path d="M39 55h50M39 74h32" fill="none" stroke="#F3F8FF" stroke-width="10" stroke-linecap="round"/>
+</svg>
