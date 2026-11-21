@@ -18,12 +18,12 @@ const c=vm.createContext({document:{getElementById:get,createElement:t=>new El(t
  if(s.includes('preset'))return preset.filter(e=>!s.includes(':checked')||e.checked);
  if(s.includes('media'))return media.filter(e=>!s.includes(':checked')||e.checked);
  return ['reading-form','rules-form','blacklist-form'].map(id=>get(id).button).concat(get('export'),get('import'));
-}},chrome:{runtime:{getManifest:()=>({version:"0.1.7"})},storage:{local:{async get(key){return {[key]:nodes[key]}},async set(data){const oldValue=nodes.settings;Object.assign(nodes,data);writes++;listener({settings:{oldValue,newValue:nodes.settings}},'local')}},onChanged:{addListener(l){listener=l}}}},Date});
+}},chrome:{runtime:{getManifest:()=>({version:"0.1.8"})},storage:{local:{async get(key){return {[key]:nodes[key]}},async set(data){const oldValue=nodes.settings;Object.assign(nodes,data);writes++;listener({settings:{oldValue,newValue:nodes.settings}},'local')}},onChanged:{addListener(l){listener=l}}}},Date});
 for(const file of ['rules.js','reading.js','options.js'])vm.runInContext(fs.readFileSync(dir+'/'+file,'utf8'),c);
 test('settings: permanent block, shortcut validation, rule writes and confirmed isolated import',async()=>{
  await new Promise(setImmediate);
  assert.equal(get('key-next').value,'j');
- assert.equal(get("extension-version").textContent,"0.1.7");
+ assert.equal(get("extension-version").textContent,"0.1.8");
  get('blocked-handle').value='@MixedCase';
  await get('blacklist-form').fire('submit');
  assert.equal(nodes.settings.blockedAuthors[0].handle,'mixedcase');

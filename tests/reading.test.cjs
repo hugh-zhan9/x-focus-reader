@@ -24,7 +24,8 @@ function fixture(t, options = {}) {
     },
     removeEventListener(type, fn) { if (listeners.get(type) === fn) listeners.delete(type); },
     scrollBy(request) { events.push(['scroll', request.top]); state.y += request.top; },
-    setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout
+    setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout,
+    requestAnimationFrame: options.requestAnimationFrame, cancelAnimationFrame: options.cancelAnimationFrame
   };
   const reader = init({
     window: fakeWindow,
@@ -32,7 +33,7 @@ function fixture(t, options = {}) {
     getFeedKey: () => state.feed,
     getDetailId: () => state.detail,
     getPosts: () => state.ids.map((id, index) => ({ id, element: {
-      getBoundingClientRect: () => ({ top: index * 350 - state.y, bottom: index * 350 + 330 - state.y })
+      getBoundingClientRect: () => ({ top: index * 350 - state.y + (state.layoutShift || 0), bottom: index * 350 + 330 - state.y + (state.layoutShift || 0) })
     } })),
     load(key) { loads.push(key); return options.load?.(key) ?? null; },
     save(key, value) { saves.push([key, value]); },
@@ -246,6 +247,129 @@ test('normal browser Back and an explicitly recognized X Back center the opened 
   f.listeners.get('popstate')();
   assert.equal(f.state.y, 0);
   assert.equal(f.events.length, 2);
+});
+
+test('Back verifies exact centering once after delayed native scroll and layout shift, without saving either', async t => {
+  const timers = new Map();
+  const f = fixture(t, {
+    state: {path:'/home'},
+    setTimeout: (fn,ms) => { timers.set(ms,fn); return ms; },
+    clearTimeout: ms => timers.delete(ms),
+  });
+  await tick();
+  assert.equal(f.reader.beforeOpen({id:'22'}), true);
+  f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22'; f.reader.update();
+  f.state.feed = 'home:following'; f.state.detail = null; f.state.path = '/home'; f.listeners.get('popstate')();
+  assert.equal(f.state.y, 215);
+  const writes = f.saves.length;
+  f.state.now += 120;
+  f.state.y = 70;
+  f.listeners.get('scroll')(); // persisted native history scroll
+  f.state.now += 250;
+  f.state.layoutShift = 90;
+  f.reader.update(); // X mounts a taller preceding card
+  assert.deepEqual(f.events, [['scroll',215]]);
+  f.state.now += 130;
+  timers.get(500)();
+  assert.equal(f.state.y, 305);
+  assert.deepEqual(f.events, [['scroll',215],['scroll',235]]);
+  f.listeners.get('scroll')(); // our own correction isn't reading progress
+  assert.equal(f.saves.length, writes);
+  assert.equal(timers.has(160), false);
+  assert.equal(timers.has(500), false);
+});
+
+test('Back corrects visible drift on the next frame and only once before the final check', async t => {
+  const timers = new Map(), frames = new Map();
+  let frameId = 0;
+  const f = fixture(t, {
+    state:{path:'/home'},
+    setTimeout:(fn,ms)=>{ timers.set(ms,fn);return ms; },
+    clearTimeout:ms=>timers.delete(ms),
+    requestAnimationFrame:fn=>{ frames.set(++frameId,fn);return frameId; },
+    cancelAnimationFrame:id=>frames.delete(id),
+  });
+  const nextFrame = () => { const next = [...frames.values()];frames.clear();next.forEach(run=>run()); };
+  await tick();
+  f.reader.beforeOpen({id:'22'});
+  f.state.feed=null;f.state.detail='22';f.state.path='/x/status/22';f.reader.update();
+  f.state.feed='home:following';f.state.detail=null;f.state.path='/home';f.listeners.get('popstate')();
+  assert.equal(f.state.y,215);
+  f.state.now+=120;f.state.y=0;nextFrame();
+  assert.equal(f.state.y,215);
+  assert.equal(frames.size,0);
+  assert.deepEqual(f.events,[['scroll',215],['scroll',215]]);
+  f.state.now+=250;f.state.layoutShift=80;nextFrame();
+  assert.equal(f.state.y,215);
+  f.state.now+=130;timers.get(500)();
+  assert.equal(f.state.y,295);
+  assert.deepEqual(f.events,[['scroll',215],['scroll',215],['scroll',80]]);
+});
+
+test('Back still verifies after a late target mount and subsequent preceding-card growth', async t => {
+  const timers = new Map();
+  const f = fixture(t, {
+    state: {path:'/'},
+    setTimeout: (fn,ms) => { timers.set(ms,fn); return ms; },
+    clearTimeout: ms => timers.delete(ms),
+  });
+  await tick();
+  f.reader.beforeOpen({id:'22'});
+  f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22'; f.reader.update();
+  f.state.feed = 'home:following'; f.state.detail = null; f.state.path = '/home';
+  f.state.ids = ['11','33','44'];
+  f.listeners.get('popstate')();
+  f.state.now += 120;
+  f.state.y = 0; f.listeners.get('scroll')();
+  assert.deepEqual(f.events, []);
+  f.state.now += 80;
+  f.state.ids = ['11','22','33','44']; f.reader.update();
+  assert.deepEqual(f.events, [['scroll',215]]);
+  f.state.now += 170;
+  f.state.layoutShift = 280; f.reader.update();
+  f.state.now += 330;
+  timers.get(500)();
+  const targetTop = 350 + f.state.layoutShift - f.state.y;
+  assert.equal(targetTop + 330 / 2, 600 / 2);
+  assert.deepEqual(f.events, [['scroll',215],['scroll',280]]);
+});
+
+test('Back correction yields to manual input, a missing exact post, or a different pathname', async t => {
+  for (const change of ['wheel','touchmove','pointerdown','space','missing','path']) {
+    const timers = new Map();
+    const f = fixture(t, {
+      state: {path:'/home'},
+      canHandleKey: () => false,
+      setTimeout: (fn,ms) => { timers.set(ms,fn); return ms; },
+      clearTimeout: ms => timers.delete(ms),
+    });
+    await tick();
+    f.reader.beforeOpen({id:'22'});
+    f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22'; f.reader.update();
+    f.state.feed = 'home:following'; f.state.detail = null; f.state.path = '/home'; f.listeners.get('popstate')();
+    if (change === 'space') key(f.listeners, ' ', {shiftKey:true});
+    else if (change === 'missing') f.state.ids = ['11','33','44'];
+    else if (change === 'path') f.state.path = '/different';
+    else f.listeners.get(change)();
+    f.state.y = 80;
+    timers.get(500)?.();
+    assert.deepEqual(f.events, [['scroll',215]], change);
+    assert.equal(f.state.y, 80, change);
+  }
+});
+
+test('return from an untracked detail never jumps to ordinary saved reading progress', async t => {
+  const f = fixture(t, {
+    state:{feed:null, detail:'22', path:'/user/status/22'},
+    load: () => ({id:'44', offset:100}),
+  });
+  f.state.detail = null; f.state.path = '/home';
+  f.reader.update(); // tab not yet mounted
+  f.state.feed = 'home:following'; f.state.y = 170;
+  f.reader.update();
+  await tick();
+  assert.deepEqual(f.events, []);
+  assert.equal(f.state.y, 170);
 });
 
 test('direct details and mismatched details never pop history; missing original anchor never causes deep scroll', async t => {

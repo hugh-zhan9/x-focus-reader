@@ -9,6 +9,10 @@
   const RELOAD_PROBE_DELAY_MS = 750;
   const OPEN_WINDOW_MS = 3000;
   const RETURN_WINDOW_MS = 3000;
+  const RETURN_SETTLE_MS = 500;
+  const RETURN_EARLY_GRACE_MS = 70;
+  const RETURN_ALIGNMENT_TOLERANCE = 4;
+  const SCROLL_KEYS = new Set([' ', 'spacebar', 'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end']);
   const RETURN_CHECKPOINT_MS = 30 * 60 * 1000;
   const EDITABLE = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]';
   const ID = /^\d{1,30}$/;
@@ -42,10 +46,12 @@
     let keys = { ...DEFAULT_KEYS };
     let feedKey = null;
     let detailId = null;
+    let suppressFeedAfterDetail = false;
     let current = null;
     let pendingOpen = null;
     let originMarker = null;
     let pendingReturn = null;
+    let settlingReturn = null;
     let reachedBoundary = false;
     let scrollTimer = null;
     let auto = null;
@@ -177,6 +183,7 @@
       if (!feedKey && (firstEntry || initialHistoryNavigation)) initialInput = true;
       firstEntry = false;
       cancelAuto();
+      clearSettlingReturn();
       if (feedKey && pendingReturn) { clearReturn(); originMarker = null; }
     }
     function startAuto(checkpoint, reload) {
@@ -223,28 +230,71 @@
       if (returnTimer !== null) win.clearTimeout(returnTimer);
       returnTimer = null;
     }
-    function jump(position) {
+    function clearSettlingReturn() {
+      if (!settlingReturn) return;
+      win.clearTimeout(settlingReturn.timer);
+      if (settlingReturn.frame !== null) win.cancelAnimationFrame?.(settlingReturn.frame);
+      settlingReturn = null;
+    }
+    function positionDelta(position) {
       const post = posts().find(entry => String(entry.id) === position.id);
-      if (!post) return false;
+      if (!post) return null;
       const rect = post.element.getBoundingClientRect();
-      if (rect.bottom <= rect.top) return false;
+      if (rect.bottom <= rect.top) return null;
       const viewport = win.innerHeight || doc.documentElement?.clientHeight || 0;
       const centered = (viewport - (rect.bottom - rect.top)) / 2;
       // Center a normal card. For a card taller than the viewport, show its
       // author and start of the body instead of the middle of a long image.
       const targetOffset = position.center ? (centered >= 0 ? centered : Math.min(120, viewport / 5)) : position.offset;
       const delta = rect.top - targetOffset;
-      if (!Number.isFinite(delta)) return false;
+      return Number.isFinite(delta) ? delta : null;
+    }
+    function jump(position) {
+      const delta = positionDelta(position);
+      if (delta === null) return false;
       if (delta !== 0) win.scrollBy({ top: delta, behavior: 'instant' });
       return true;
+    }
+    function settleReturn(marker) {
+      clearSettlingReturn();
+      const path = routePath();
+      const view = settlingReturn = {feedKey:marker.feedKey,path,timer:null,frame:null,startedAt:now()};
+      const matches = () => adapter.getFeedKey?.() === view.feedKey && !adapter.getDetailId?.() &&
+        routePath() === view.path && doc.visibilityState !== 'hidden';
+      const realign = () => {
+        const delta = positionDelta(marker.position);
+        if (delta === null || Math.abs(delta) <= RETURN_ALIGNMENT_TOLERANCE) return false;
+        win.scrollBy({top:delta, behavior:'instant'});
+        baselineY = getY();
+        return true;
+      };
+      // Repair the first visible drift before the next paint when possible.
+      // Cap at one early correction plus one final check, so a moving feed
+      // cannot pull the reader back and forth indefinitely.
+      const watch = () => {
+        view.frame = null;
+        if (settlingReturn !== view || !matches()) return;
+        if (now() - view.startedAt >= RETURN_EARLY_GRACE_MS && realign()) return;
+        view.frame = win.requestAnimationFrame(watch);
+      };
+      if (typeof win.requestAnimationFrame === 'function') view.frame = win.requestAnimationFrame(watch);
+      view.timer = win.setTimeout(() => {
+        if (settlingReturn !== view) return;
+        if (matches()) realign();
+        clearSettlingReturn();
+        update();
+      }, RETURN_SETTLE_MS);
     }
 
     function update(force = false, fromHistory = false, expired = false) {
       const incomingFeed = adapter.getFeedKey?.() || null;
       const rawDetail = String(adapter.getDetailId?.() ?? '');
       const incomingDetail = ID.test(rawDetail) ? rawDetail : null;
+      if (settlingReturn && (incomingFeed !== settlingReturn.feedKey || incomingDetail ||
+          routePath() !== settlingReturn.path)) clearSettlingReturn();
       const suppressResume = fromHistory || (historyPath !== null && historyPath === routePath());
       if (historyPath !== null && (incomingFeed || historyPath !== routePath())) historyPath = null;
+      if (incomingDetail) suppressFeedAfterDetail = true;
       if (incomingDetail || fromHistory) firstEntry = false;
       if (incomingFeed !== feedKey || incomingDetail !== detailId) {
         if (!incomingDetail && originMarker && detailId === originMarker.detailId &&
@@ -269,6 +319,7 @@
         pendingOpen = null;
         if (pendingReturn && incomingFeed && incomingFeed !== pendingReturn.feedKey) clearReturn();
         if (pendingReturn && incomingDetail && incomingDetail !== pendingReturn.detailId) clearReturn();
+        if (pendingReturn && !incomingDetail && pendingReturn.path && routePath() !== pendingReturn.path) clearReturn();
         if (feedKey) {
           beginLoad(feedKey);
           if (initialHistoryNavigation && !initialInput && !pendingReturn) {
@@ -279,7 +330,7 @@
               waitForReturn({detailId:String(saved.id), feedKey, path:saved.path, position:{id:String(saved.id), center:true}});
             }
           }
-          if (!suppressResume && !pendingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
+          if (!suppressResume && !suppressFeedAfterDetail && !pendingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
             // A reload can reuse the current entry's exact last position even
             // while native scroll restoration or X's initial layout changes Y.
             let checkpoint = null;
@@ -289,18 +340,24 @@
             }
             startAuto(checkpoint, reload);
           }
+          suppressFeedAfterDetail = false;
           firstEntry = false;
           initialHistoryNavigation = false;
           initialInput = false;
         }
       }
-      if (feedKey && pendingReturn?.feedKey === feedKey) {
-        const returned = jump(pendingReturn.position);
-        if (returned || now() > pendingReturn.expiresAt) {
+      if (feedKey && pendingReturn?.feedKey === feedKey && !detailId) {
+        const marker = pendingReturn;
+        const path = routePath();
+        if (marker.path && marker.path !== path) clearReturn();
+        const returned = pendingReturn && now() <= marker.expiresAt && jump(marker.position);
+        if (returned || now() > marker.expiresAt) {
           clearReturn();
           originMarker = null;
-          if (returned) baselineY = getY();
-          else boundary('missing-origin');
+          if (returned) {
+            baselineY = getY();
+            settleReturn(marker);
+          } else boundary('missing-origin');
         }
       }
       if (auto && !auto.waiting) {
@@ -344,12 +401,13 @@
     }
     function onScroll() {
       update();
-      if (!feedKey || pendingReturn || auto || Math.abs(getY() - baselineY) < 20 || !stage()) return;
+      if (!feedKey || pendingReturn || settlingReturn || auto || Math.abs(getY() - baselineY) < 20 || !stage()) return;
       const key = feedKey;
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
       scrollTimer = win.setTimeout(() => { scrollTimer = null; flush(key); }, SCROLL_SAVE_MS);
     }
     function pagehide() {
+      clearSettlingReturn();
       cancelAuto();
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
       scrollTimer = null;
@@ -358,6 +416,7 @@
       flush();
     }
     function step(direction) {
+      clearSettlingReturn();
       cancelAuto();
       update();
       const { choices, line } = locate();
@@ -373,6 +432,7 @@
       return true;
     }
     function resume() {
+      clearSettlingReturn();
       cancelAuto();
       update();
       const saved = getProgress().saved;
@@ -381,6 +441,7 @@
       return true;
     }
     function beforeOpen(post) {
+      clearSettlingReturn();
       cancelAuto();
       update();
       const id = String(post?.id ?? '');
@@ -391,6 +452,7 @@
       return true;
     }
     function open() {
+      clearSettlingReturn();
       cancelAuto();
       update();
       const post = posts().find(candidate => String(candidate.id) === current?.id);
@@ -430,16 +492,18 @@
       if (originMarker && !adapter.getDetailId?.() &&
           (nextFeed === originMarker.feedKey ||
            (!nextFeed && (!path || !originMarker.path || path === originMarker.path)))) armReturn();
+      clearSettlingReturn();
       cancelAuto();
       historyPath = path;
       update(false, true);
     }
     function onKey(event) {
+      if (!event.isComposing && !event.defaultPrevented && !editableEvent(event) &&
+          SCROLL_KEYS.has(String(event.key).toLowerCase())) noteInput();
       if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey ||
           event.shiftKey || editableEvent(event) || (adapter.canHandleKey && !adapter.canHandleKey(event))) return;
       const key = normalizeKey(event.key);
       if (!key) return;
-      if ([' ', 'arrowup', 'arrowdown', 'pageup', 'pagedown', 'home', 'end'].includes(String(event.key).toLowerCase())) noteInput();
       let handled = false;
       if (key === normalizeKey(keys.origin)) handled = origin();
       else if (key === normalizeKey(keys.next)) handled = step(1);
