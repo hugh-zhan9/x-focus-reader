@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "X Focus Reader",
   "description": "本地过滤、阅读进度、原位返回和键盘浏览。仅作用于 X。",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "permissions": ["storage"],
   "action": {"default_title": "X Focus Reader · 设置"},
   "background": {"service_worker": "background.js"},

@@ -16,6 +16,7 @@ const timeline = `<div role="tab" aria-selected="true">For you</div>` +
   Array.from({length:24}, (_,i) => slot(1001+i)).join('');
 const fixture = `<!doctype html><meta charset=utf-8>
 <style>html{overflow-anchor:none}body{margin:0}#primary{width:600px}article{border-bottom:1px solid gray}</style>
+<nav style="position:fixed;right:0;top:0"><a data-testid="AppTabBar_Home_Link" href="/home">Home</a></nav>
 <main><div id="primary" data-testid="primaryColumn"></div></main>
 <script>
 const primary = document.getElementById('primary');
@@ -23,9 +24,9 @@ const target = ${target};
 const timeline = ${JSON.stringify(timeline)};
 const targetCell = 'cell-' + target;
 const scenario = new URLSearchParams(location.search).get('case');
-history.scrollRestoration = 'manual';
+history.scrollRestoration = scenario === 'native-auto' ? 'auto' : 'manual';
 function detail() {
-  primary.innerHTML = '<article><p>Synthetic detail</p></article>';
+  primary.innerHTML = '<button type="button" data-testid="app-bar-back">Back</button><article><p>Synthetic detail</p></article>';
   window.scrollTo(0,0);
 }
 function home(returning) {
@@ -42,13 +43,57 @@ function home(returning) {
     setTimeout(() => cell.append(post),200);
     setTimeout(() => {document.getElementById('cell-1008').style.height='540px';},370);
   }
+  if (['app-bar','home-link','native-auto'].includes(scenario)) {
+    const row = document.getElementById(targetCell).firstElementChild;
+    const link = row.querySelector('a');
+    link.href = '/example/status/9999';
+    setTimeout(() => { link.href = '/example/status/' + target; },130);
+    setTimeout(() => {
+      document.getElementById('cell-1008').style.height='540px';
+      document.documentElement.dataset.fixtureReturnReady = 'yes';
+    },315);
+  }
+  if (scenario === 'virtual-remount') {
+    const cell = document.getElementById(targetCell);
+    const post = cell.firstElementChild;
+    const tab = primary.querySelector('[role="tab"]');
+    // X can briefly reattach the previous window, then replace it and
+    // remount the exact card with a different virtual coordinate.
+    setTimeout(() => { post.remove(); tab.setAttribute('aria-selected','false'); },180);
+    setTimeout(() => { tab.setAttribute('aria-selected','true'); window.scrollBy(0,1418); },430);
+    setTimeout(() => {
+      document.getElementById('cell-1008').style.height='540px';
+      cell.append(post);
+      document.documentElement.dataset.fixtureReturnReady = 'yes';
+    },2100);
+  }
+  if (scenario.startsWith('late-discovery')) {
+    const cell = document.getElementById(targetCell);
+    const post = cell.firstElementChild;
+    post.remove();
+    // Recorded live shape: X makes several native scroll adjustments while
+    // the original post is not mounted, then its row returns off-center.
+    setTimeout(() => window.scrollTo(0,2100),300);
+    setTimeout(() => window.scrollTo(0,1700),870);
+    setTimeout(() => window.scrollTo(0,2250),1350);
+    setTimeout(() => {
+      cell.append(post);
+      document.documentElement.dataset.fixtureReturnReady = 'yes';
+    },3500);
+  }
 }
 if (location.pathname.includes('/status/')) detail(); else home(false);
 window.addEventListener('popstate',() => {if(location.pathname==='/home') home(true); else detail();});
 document.addEventListener('click', e => {
+  if(e.target.closest('[data-testid="app-bar-back"]')) return history.back();
   const link=e.target.closest('a');
   if(!link) return;
   e.preventDefault();
+  if(link.dataset.testid === 'AppTabBar_Home_Link') {
+    history.pushState({},'',link.getAttribute('href'));
+    home(true);
+    return;
+  }
   history.pushState({},'',link.getAttribute('href'));
   detail();
 });
@@ -72,20 +117,48 @@ document.addEventListener('click', e => {
     });
     const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker',{timeout:10000});
     assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().name),'X Focus Reader');
-    for (const scenario of ['late-scroll','layout','delayed-target','manual']) {
+    const scenarios = ['late-scroll','layout','delayed-target','manual','app-bar','home-link','native-auto','virtual-remount',
+      'late-discovery','late-discovery-manual'];
+    for (const scenario of process.argv.length > 2 ? process.argv.slice(2) : scenarios) {
+      assert.ok(scenarios.includes(scenario), `unknown scenario: ${scenario}`);
       const page = await ctx.newPage();
       await page.goto(`https://x.com/home?case=${scenario}`);
       await page.waitForSelector('.xfr-control',{state:'attached'});
-      await page.locator(`#post-${target}`).evaluate(el => el.scrollIntoView({block:'center'}));
+      await page.locator(`#post-${target}`).evaluate((el, native) => {
+        if (native) window.scrollBy(0, el.getBoundingClientRect().top - 140);
+        else el.scrollIntoView({block:'center'});
+      },scenario === 'native-auto');
       await page.locator(`#open-${target}`).click();
       await page.waitForURL(`https://x.com/example/status/${target}`);
       await page.locator('article').innerText();
       // Give the content script the same opportunity to observe the detail
       // as when a reader spends time there before going back.
-      await page.waitForTimeout(120);
-      await page.goBack();
-      await page.waitForURL(`https://x.com/home?case=${scenario}`);
-      if (scenario === 'manual') {
+      if (scenario !== 'app-bar') await page.waitForTimeout(120);
+      if (['app-bar','virtual-remount'].includes(scenario) || scenario.startsWith('late-discovery'))
+        await page.getByTestId('app-bar-back').click();
+      else if (scenario === 'home-link') await page.getByTestId('AppTabBar_Home_Link').click();
+      else await page.goBack();
+      await page.waitForURL(scenario === 'home-link' ? 'https://x.com/home' : `https://x.com/home?case=${scenario}`);
+      if (scenario === 'native-auto') assert.equal(await page.evaluate(() => history.scrollRestoration), 'auto');
+      let retainedY;
+      if (scenario === 'late-discovery-manual') {
+        await page.waitForFunction(() => window.scrollY === 2250);
+        await page.mouse.move(200,320);
+        await page.mouse.wheel(0,170);
+        await page.waitForFunction(() => window.scrollY >= 2410);
+        retainedY = await page.evaluate(() => window.scrollY);
+      }
+      if (['app-bar','home-link','native-auto','virtual-remount'].includes(scenario)) {
+        await page.waitForSelector('html[data-fixture-return-ready="yes"]',{state:'attached'});
+      }
+      if (scenario.startsWith('late-discovery')) {
+        await page.waitForSelector('html[data-fixture-return-ready="yes"]',{state:'attached'});
+      }
+      if (scenario === 'late-discovery-manual') {
+        await page.waitForTimeout(650);
+        assert.ok(Math.abs((await page.evaluate(() => window.scrollY))-retainedY)<=3,
+          'late discovery must not override manual scrolling');
+      } else if (scenario === 'manual') {
         await page.waitForFunction(() => window.scrollY > 1800);
         const before = await page.evaluate(() => window.scrollY);
         await page.mouse.move(200,320);

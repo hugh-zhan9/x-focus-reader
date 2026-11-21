@@ -16,7 +16,8 @@ function fixture(t, options = {}) {
     innerHeight: 600,
     performance: {getEntriesByType: () => [{type: options.navigationType}]},
     get scrollY() { return state.y; },
-    get location() { return { pathname: state.path }; },
+    get location() { return { pathname: state.path, origin:'https://x.com' }; },
+    navigation: options.navigation,
     document: { documentElement: {scrollHeight: options.scrollHeight} },
     addEventListener(type, fn, capture) {
       if (type === 'keydown') assert.equal(capture, true);
@@ -372,6 +373,126 @@ test('return from an untracked detail never jumps to ordinary saved reading prog
   assert.equal(f.state.y, 170);
 });
 
+test('app-bar Back waits past 3.4s of Home hydration for the exact card only', async t => {
+  for (const mode of ['late-exact','manual','wrong-feed','never-mounted','hard-timeout']) {
+    const f = fixture(t, {state:{path:'/home'}});
+    await tick();
+    f.reader.beforeOpen({id:'22'});
+    f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22'; f.reader.update();
+    assert.equal(f.reader.beforeBack(), true);
+    f.state.now += 2500; // click time is not Home ready time
+    f.state.detail = null; f.state.path = '/home'; f.reader.update();
+    f.state.feed = 'home:following'; f.state.ids = ['11','33','44']; f.state.y = 100;
+    f.reader.update();
+    f.state.now += 1200; f.state.y = 180; f.listeners.get('scroll')();
+    if (mode === 'manual') f.listeners.get('wheel')();
+    if (mode === 'wrong-feed') { f.state.feed = 'home:for-you'; f.reader.update(); }
+    f.state.now += mode === 'hard-timeout' ? 9500 : 2300;
+    f.state.y = 2400;
+    if (mode !== 'never-mounted') f.state.ids = ['11','22','33','44'];
+    f.reader.update();
+    assert.deepEqual(f.events,mode === 'late-exact' ? [['scroll',-2185]] : [],mode);
+  }
+});
+
+test('an exact app-bar return survives same-Home virtual gaps through 2.13s and corrects only once', async t => {
+  const timers = new Map();
+  const f = fixture(t, {
+    state:{path:'/home', ids:['11','22','33','44']},
+    setTimeout:(fn,ms) => { timers.set(ms,fn); return ms; },
+    clearTimeout:ms => timers.delete(ms),
+  });
+  await tick();
+  f.reader.beforeOpen({id:'22'});
+  f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22'; f.reader.update();
+  assert.equal(f.reader.beforeBack(), true);
+  f.state.feed = 'home:following'; f.state.detail = null; f.state.path = '/home'; f.reader.update();
+  assert.equal(f.state.y,215);
+  const writes = f.saves.length;
+  f.state.now += 500;
+  timers.get(500)();
+  f.state.now += 300;
+  f.state.ids = ['11','33','44']; f.reader.update();
+  f.state.now += 300;
+  f.state.feed = null; f.reader.update();
+  f.state.now += 1030;
+  f.state.feed = 'home:following'; f.state.ids = ['11','22','33','44'];
+  f.state.y = 2400; f.reader.update(); // remount: exact target top = -2050
+  assert.equal(f.state.y,215);
+  assert.deepEqual(f.events,[['scroll',215],['scroll',-2185]]);
+  f.listeners.get('scroll')();
+  assert.equal(f.saves.length,writes);
+  f.state.ids = ['11','33','44']; f.reader.update();
+  f.state.ids = ['11','22','33','44']; f.state.y = 800; f.reader.update();
+  assert.equal(f.state.y,800,'second virtual gap cannot trigger another correction');
+});
+
+test('late exact remount cannot override input during an unresolved tab, a different feed, or timeout', async t => {
+  for (const mode of ['input','wrong-feed','timeout']) {
+    const timers = new Map();
+    const f = fixture(t, {
+      state:{path:'/home'},
+      setTimeout:(fn,ms) => { timers.set(ms,fn); return ms; },
+      clearTimeout:ms => timers.delete(ms),
+    });
+    await tick();
+    f.reader.beforeOpen({id:'22'});
+    f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22'; f.reader.update();
+    f.reader.beforeBack();
+    f.state.feed = 'home:following'; f.state.detail = null; f.state.path = '/home'; f.reader.update();
+    f.state.now += 500; timers.get(500)();
+    f.state.feed = null; f.state.ids = ['11','33']; f.reader.update();
+    if (mode === 'input') f.listeners.get('wheel')();
+    if (mode === 'wrong-feed') { f.state.feed = 'home:for-you'; f.reader.update(); }
+    if (mode === 'timeout') f.state.now += 8001;
+    f.state.feed = 'home:following'; f.state.ids = ['11','22','33','44'];
+    f.state.y = 2400; f.reader.update();
+    assert.equal(f.state.y,2400,mode);
+    assert.deepEqual(f.events,[['scroll',215]],mode);
+  }
+});
+
+test('a quick SPA Back before the reader refresh still centers the verified opened post', async t => {
+  const f = fixture(t, {state:{path:'/home'}});
+  await tick();
+  f.reader.beforeOpen({id:'22'});
+  f.state.feed = null; f.state.detail = '22'; f.state.path = '/user/status/22';
+  await Promise.resolve(); // native same-task pushState, then queued history traversal
+  f.state.feed = 'home:following'; f.state.detail = null; f.state.path = '/home';
+  f.listeners.get('popstate')();
+  assert.equal(f.state.y, 215);
+});
+
+test('persisted Back can restore only a confirmed cross-document departure on the same entry', async t => {
+  for (const kind of ['exact','wrong-target','prevented','different-entry','ordinary-pageshow']) {
+    const routeEvents = new Map();
+    let entry;
+    const f = fixture(t, {
+      state:{path:'/home'},
+      navigation:{
+        addEventListener:(name, fn) => routeEvents.set(name,fn),
+        removeEventListener:(name, fn) => { if (routeEvents.get(name) === fn) routeEvents.delete(name); }
+      },
+      loadReturnCheckpoint:() => entry,
+      saveReturnCheckpoint:(_key,value) => { entry = value; },
+    });
+    await tick();
+    f.reader.beforeOpen({id:'22'});
+    routeEvents.get('navigate')?.({
+      destination:{sameDocument:false,url:'https://x.com/user/status/' + (kind === 'wrong-target' ? '33' : '22')},
+      defaultPrevented: kind === 'prevented',
+    });
+    await Promise.resolve();
+    f.listeners.get('pagehide')({persisted:true});
+    if (kind === 'different-entry') entry = {...entry,at:entry.at + 1};
+    f.listeners.get('pageshow')?.({persisted:kind !== 'ordinary-pageshow'});
+    assert.equal(f.state.y,kind === 'exact' ? 215 : 0,kind);
+    f.state.y = 10;
+    f.listeners.get('pageshow')?.({persisted:true});
+    assert.equal(f.state.y,10,'not reusable for unrelated Back');
+  }
+});
+
 test('direct details and mismatched details never pop history; missing original anchor never causes deep scroll', async t => {
   const f = fixture(t, { state: { feed: null, detail: '22' } });
   assert.deepEqual(key(f.listeners, 'Escape'), [0, 0]);
@@ -391,7 +512,7 @@ test('direct details and mismatched details never pop history; missing original 
   assert.equal(f.reader.beforeBack(), true);
   f.state.feed = 'home:following'; f.state.detail = null; f.state.y = 0; f.state.ids = ['11', '33'];
   f.reader.update();
-  f.state.now += 4_000;
+  f.state.now += 8_001;
   f.reader.refresh();
   assert.deepEqual(f.events, []);
   assert.equal(f.state.back, 0);

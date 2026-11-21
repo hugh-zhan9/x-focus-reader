@@ -8,7 +8,8 @@
   const AUTO_RESUME_MS = 8000;
   const RELOAD_PROBE_DELAY_MS = 750;
   const OPEN_WINDOW_MS = 3000;
-  const RETURN_WINDOW_MS = 3000;
+  const RETURN_DISCOVERY_MS = 8000;
+  const RETURN_HARD_LIMIT_MS = 10000;
   const RETURN_SETTLE_MS = 500;
   const RETURN_EARLY_GRACE_MS = 70;
   const RETURN_ALIGNMENT_TOLERANCE = 4;
@@ -49,9 +50,12 @@
     let suppressFeedAfterDetail = false;
     let current = null;
     let pendingOpen = null;
+    let crossDeparture = null;
+    let persistedDeparture = null;
     let originMarker = null;
     let pendingReturn = null;
     let settlingReturn = null;
+    let returnResumeGuard = null;
     let reachedBoundary = false;
     let scrollTimer = null;
     let auto = null;
@@ -184,7 +188,14 @@
       firstEntry = false;
       cancelAuto();
       clearSettlingReturn();
-      if (feedKey && pendingReturn) { clearReturn(); originMarker = null; }
+      if (pendingReturn && !adapter.getDetailId?.() &&
+          (feedKey || (pendingReturn.path && routePath() === pendingReturn.path))) {
+        if (pendingReturn.path && routePath() === pendingReturn.path) {
+          returnResumeGuard = {path:pendingReturn.path, expiresAt:pendingReturn.expiresAt};
+        }
+        clearReturn();
+        originMarker = null;
+      }
     }
     function startAuto(checkpoint, reload) {
       const startedAt = now();
@@ -233,6 +244,7 @@
     function clearSettlingReturn() {
       if (!settlingReturn) return;
       win.clearTimeout(settlingReturn.timer);
+      win.clearTimeout(settlingReturn.expiration);
       if (settlingReturn.frame !== null) win.cancelAnimationFrame?.(settlingReturn.frame);
       settlingReturn = null;
     }
@@ -255,19 +267,21 @@
       if (delta !== 0) win.scrollBy({ top: delta, behavior: 'instant' });
       return true;
     }
+    function alignReturn(delta) {
+      if (delta === null || Math.abs(delta) <= RETURN_ALIGNMENT_TOLERANCE) return false;
+      win.scrollBy({top:delta, behavior:'instant'});
+      baselineY = getY();
+      return true;
+    }
     function settleReturn(marker) {
       clearSettlingReturn();
       const path = routePath();
-      const view = settlingReturn = {feedKey:marker.feedKey,path,timer:null,frame:null,startedAt:now()};
+      returnResumeGuard = {path, expiresAt:marker.expiresAt};
+      const view = settlingReturn = {feedKey:marker.feedKey,path,position:marker.position,timer:null,
+        expiration:null,frame:null,startedAt:now(),expiresAt:marker.expiresAt,late:false,gap:false,remounted:false};
       const matches = () => adapter.getFeedKey?.() === view.feedKey && !adapter.getDetailId?.() &&
-        routePath() === view.path && doc.visibilityState !== 'hidden';
-      const realign = () => {
-        const delta = positionDelta(marker.position);
-        if (delta === null || Math.abs(delta) <= RETURN_ALIGNMENT_TOLERANCE) return false;
-        win.scrollBy({top:delta, behavior:'instant'});
-        baselineY = getY();
-        return true;
-      };
+        routePath() === view.path && doc.visibilityState !== 'hidden' && now() <= view.expiresAt;
+      const realign = () => alignReturn(positionDelta(view.position));
       // Repair the first visible drift before the next paint when possible.
       // Cap at one early correction plus one final check, so a moving feed
       // cannot pull the reader back and forth indefinitely.
@@ -280,19 +294,58 @@
       if (typeof win.requestAnimationFrame === 'function') view.frame = win.requestAnimationFrame(watch);
       view.timer = win.setTimeout(() => {
         if (settlingReturn !== view) return;
-        if (matches()) realign();
-        clearSettlingReturn();
+        win.clearTimeout(view.timer);
+        view.timer = null;
+        if (view.frame !== null) win.cancelAnimationFrame?.(view.frame);
+        view.frame = null;
+        if (matches()) {
+          const delta = positionDelta(view.position);
+          if (delta !== null) {
+            alignReturn(delta);
+            view.gap = false;
+          } else view.gap = true;
+        }
+        view.late = true;
         update();
       }, RETURN_SETTLE_MS);
+      view.expiration = win.setTimeout(() => {
+        if (settlingReturn !== view) return;
+        clearSettlingReturn();
+        baselineY = getY();
+        if (feedKey && returnResumeGuard?.path === view.path) returnResumeGuard = null;
+        update();
+      }, Math.max(0, view.expiresAt - now() + 1));
+    }
+    function observeReturnRemount() {
+      const view = settlingReturn;
+      if (!view) return;
+      if (now() > view.expiresAt) {
+        clearSettlingReturn();
+        baselineY = getY();
+        return;
+      }
+      // During SPA hydration the selected Home tab may disappear while the
+      // URL is unchanged. Treat this as a gap, not a different known feed.
+      if (!feedKey) { view.gap = true; return; }
+      if (detailId || feedKey !== view.feedKey || doc.visibilityState === 'hidden') return;
+      const delta = positionDelta(view.position);
+      if (delta === null) { view.gap = true; return; }
+      if (view.late && view.gap && !view.remounted) {
+        view.remounted = true;
+        alignReturn(delta);
+      }
+      view.gap = false;
     }
 
     function update(force = false, fromHistory = false, expired = false) {
       const incomingFeed = adapter.getFeedKey?.() || null;
       const rawDetail = String(adapter.getDetailId?.() ?? '');
       const incomingDetail = ID.test(rawDetail) ? rawDetail : null;
-      if (settlingReturn && (incomingFeed !== settlingReturn.feedKey || incomingDetail ||
+      if (settlingReturn && ((incomingFeed && incomingFeed !== settlingReturn.feedKey) || incomingDetail ||
           routePath() !== settlingReturn.path)) clearSettlingReturn();
-      const suppressResume = fromHistory || (historyPath !== null && historyPath === routePath());
+      if (returnResumeGuard && (incomingDetail || routePath() !== returnResumeGuard.path ||
+          (feedKey && now() > returnResumeGuard.expiresAt))) returnResumeGuard = null;
+      const suppressResume = Boolean(returnResumeGuard) || fromHistory || (historyPath !== null && historyPath === routePath());
       if (historyPath !== null && (incomingFeed || historyPath !== routePath())) historyPath = null;
       if (incomingDetail) suppressFeedAfterDetail = true;
       if (incomingDetail || fromHistory) firstEntry = false;
@@ -321,6 +374,7 @@
         if (pendingReturn && incomingDetail && incomingDetail !== pendingReturn.detailId) clearReturn();
         if (pendingReturn && !incomingDetail && pendingReturn.path && routePath() !== pendingReturn.path) clearReturn();
         if (feedKey) {
+          if (returnResumeGuard && now() > returnResumeGuard.expiresAt) returnResumeGuard = null;
           beginLoad(feedKey);
           if (initialHistoryNavigation && !initialInput && !pendingReturn) {
             let saved;
@@ -330,7 +384,7 @@
               waitForReturn({detailId:String(saved.id), feedKey, path:saved.path, position:{id:String(saved.id), center:true}});
             }
           }
-          if (!suppressResume && !suppressFeedAfterDetail && !pendingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
+          if (!suppressResume && !suppressFeedAfterDetail && !pendingReturn && !settlingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
             // A reload can reuse the current entry's exact last position even
             // while native scroll restoration or X's initial layout changes Y.
             let checkpoint = null;
@@ -346,20 +400,34 @@
           initialInput = false;
         }
       }
-      if (feedKey && pendingReturn?.feedKey === feedKey && !detailId) {
+      if (pendingReturn) {
         const marker = pendingReturn;
         const path = routePath();
-        if (marker.path && marker.path !== path) clearReturn();
-        const returned = pendingReturn && now() <= marker.expiresAt && jump(marker.position);
+        if (!detailId && (!marker.path || path === marker.path) && (marker.path || feedKey === marker.feedKey) &&
+            !marker.homeReached && now() <= marker.hardExpiresAt) {
+          // X's app-bar click only arms an intent. Start passive exact-card
+          // discovery when the original URL is actually reached.
+          marker.homeReached = true;
+          marker.expiresAt = Math.min(marker.hardExpiresAt, now() + RETURN_DISCOVERY_MS);
+          if (marker.path) returnResumeGuard = {path:marker.path, expiresAt:marker.expiresAt};
+          scheduleReturnExpiry(marker);
+        }
+        const returned = marker.homeReached && feedKey === marker.feedKey && !detailId &&
+          (!marker.path || path === marker.path) && now() <= marker.expiresAt &&
+          doc.visibilityState !== 'hidden' && jump(marker.position);
         if (returned || now() > marker.expiresAt) {
           clearReturn();
           originMarker = null;
           if (returned) {
             baselineY = getY();
+            // Initial discovery and post-alignment repair are separate clocks,
+            // still subject to the original absolute bound for this return.
+            marker.expiresAt = Math.min(marker.hardExpiresAt, Math.max(marker.expiresAt, now() + RETURN_SETTLE_MS));
             settleReturn(marker);
           } else boundary('missing-origin');
         }
       }
+      observeReturnRemount();
       if (auto && !auto.waiting) {
         if (!auto.checkpoint && getY() !== auto.y) cancelAuto();
         else {
@@ -406,7 +474,9 @@
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
       scrollTimer = win.setTimeout(() => { scrollTimer = null; flush(key); }, SCROLL_SAVE_MS);
     }
-    function pagehide() {
+    function pagehide(event) {
+      persistedDeparture = event?.persisted ? crossDeparture : null;
+      crossDeparture = null;
       clearSettlingReturn();
       cancelAuto();
       if (scrollTimer !== null) win.clearTimeout(scrollTimer);
@@ -414,6 +484,37 @@
       // The tab-private write has already been sent by stage(). The deferred
       // record still serves new tabs and later browser sessions.
       flush();
+    }
+    function onNavigate(event) {
+      crossDeparture = null;
+      const candidate = pendingOpen;
+      const destination = event.destination;
+      if (!candidate || destination?.sameDocument !== false || typeof destination.url !== 'string' ||
+          event.isTrusted === false || now() > candidate.expiresAt) return;
+      let url;
+      try { url = new URL(destination.url); } catch { return; }
+      const status = /^\/(?:[a-z0-9_]{1,15}|i\/web)\/status\/(\d{1,25})\/?$/i.exec(url.pathname);
+      if (url.origin !== win.location?.origin || status?.[1] !== candidate.detailId) return;
+      const departure = crossDeparture = candidate;
+      // Other navigate handlers can still cancel within this event turn.
+      Promise.resolve().then(() => {
+        if (event.defaultPrevented && crossDeparture === departure) crossDeparture = null;
+      });
+    }
+    function onPageShow(event) {
+      const departure = persistedDeparture;
+      persistedDeparture = null;
+      if (!event.persisted || !departure || !departure.path || routePath() !== departure.path ||
+          adapter.getDetailId?.()) return;
+      const activeFeed = adapter.getFeedKey?.();
+      if (activeFeed && activeFeed !== departure.feedKey) return;
+      let saved;
+      try { saved = adapter.loadReturnCheckpoint?.(departure.feedKey); } catch { return; }
+      if (saved?.id !== departure.detailId || saved?.path !== departure.path || saved?.at !== departure.at ||
+          now() < saved.at || now() - saved.at > RETURN_CHECKPOINT_MS) return;
+      pendingOpen = null;
+      waitForReturn(departure);
+      update();
     }
     function step(direction) {
       clearSettlingReturn();
@@ -446,8 +547,15 @@
       update();
       const id = String(post?.id ?? '');
       if (!feedKey || !ID.test(id) || !posts().some(item => String(item.id) === id)) return false;
-      pendingOpen = { detailId: id, feedKey, path: routePath(), position: { id, center:true }, expiresAt: now() + OPEN_WINDOW_MS };
-      try { adapter.saveReturnCheckpoint?.(feedKey, {id, path:pendingOpen.path, at:now()}); } catch {}
+      const at = now();
+      const candidate = pendingOpen = {detailId:id, feedKey, path:routePath(), position:{id,center:true}, at, expiresAt:at + OPEN_WINDOW_MS};
+      try { adapter.saveReturnCheckpoint?.(feedKey, {id, path:candidate.path, at}); } catch {}
+      // X can change the route in the click turn before the content observer's
+      // next animation frame. Verify that exact route before a fast browser Back.
+      Promise.resolve().then(() => {
+        if (started && pendingOpen === candidate && now() <= candidate.expiresAt &&
+            String(adapter.getDetailId?.() ?? '') === id) update();
+      });
       capture();
       return true;
     }
@@ -461,12 +569,20 @@
       pendingOpen = null;
       return false;
     }
-    function waitForReturn(marker) {
-      pendingReturn = { ...marker, expiresAt: now() + RETURN_WINDOW_MS };
+    function scheduleReturnExpiry(marker) {
+      if (returnTimer !== null) win.clearTimeout(returnTimer);
       returnTimer = win.setTimeout(() => {
+        if (pendingReturn !== marker) return;
         update();
-        if (pendingReturn) { clearReturn(); originMarker = null; boundary('missing-origin'); publish(); }
-      }, RETURN_WINDOW_MS + 1);
+        if (pendingReturn === marker && now() > marker.expiresAt) {
+          clearReturn(); originMarker = null; boundary('missing-origin'); publish();
+        }
+      }, Math.max(0, marker.expiresAt - now() + 1));
+    }
+    function waitForReturn(marker) {
+      const hardExpiresAt = now() + RETURN_HARD_LIMIT_MS;
+      pendingReturn = {...marker, homeReached:false, hardExpiresAt, expiresAt:hardExpiresAt};
+      scheduleReturnExpiry(pendingReturn);
       return true;
     }
     function armReturn() {
@@ -522,6 +638,8 @@
       win.addEventListener('resize', update);
       win.addEventListener('popstate', onPopState);
       win.addEventListener('pagehide', pagehide);
+      win.addEventListener('pageshow', onPageShow);
+      win.navigation?.addEventListener?.('navigate', onNavigate);
       update();
     }
     function stop() {
@@ -535,6 +653,8 @@
       win.removeEventListener('resize', update);
       win.removeEventListener('popstate', onPopState);
       win.removeEventListener('pagehide', pagehide);
+      win.removeEventListener('pageshow', onPageShow);
+      win.navigation?.removeEventListener?.('navigate', onNavigate);
     }
     return { start, stop, update, refresh: () => update(true), capture, resume, next: () => step(1), previous: () => step(-1),
       open, beforeOpen, beforeBack, origin, getProgress, setKeys };
