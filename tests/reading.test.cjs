@@ -43,6 +43,8 @@ function fixture(t, options = {}) {
     canHandleKey: options.canHandleKey,
     loadCheckpoint: options.loadCheckpoint,
     saveCheckpoint: options.saveCheckpoint,
+    loadReturnCheckpoint: options.loadReturnCheckpoint,
+    saveReturnCheckpoint: options.saveReturnCheckpoint,
   });
   reader.start();
   t.after(() => reader.stop());
@@ -216,26 +218,26 @@ test('keyboard consumes verified actions, never editing, modifiers or unhandled 
   assert.equal(f.listeners.size, 0);
 });
 
-test('normal browser Back and an explicitly recognized X Back restore only the originating feed and offset', async t => {
+test('normal browser Back and an explicitly recognized X Back center the opened post, not an unrelated reading anchor', async t => {
   const f = fixture(t, { state: { y: 250 } });
   await tick();
   const open = () => {
-    assert.equal(f.reader.beforeOpen({ id: '22' }), true);
-    f.state.feed = null; f.state.detail = '22'; f.state.y = 0;
+    assert.equal(f.reader.beforeOpen({ id: '33' }), true);
+    f.state.feed = null; f.state.detail = '33'; f.state.y = 0;
     f.reader.update();
   };
   open();
   f.state.feed = 'home:following'; f.state.detail = null;
   f.listeners.get('popstate')();
-  assert.equal(f.state.y, 250);
+  assert.equal(f.state.y, 565);
   assert.equal(f.state.back, 0); // browser already moved; extension never goes back again
   assert.equal(f.reader.getProgress().canReturn, false);
   open();
   assert.equal(f.reader.beforeBack(), true);
   f.state.feed = 'home:following'; f.state.detail = null;
   f.reader.refresh();
-  assert.equal(f.state.y, 250);
-  assert.deepEqual(f.events, [['scroll', 250], ['scroll', 250]]);
+  assert.equal(f.state.y, 565);
+  assert.deepEqual(f.events, [['scroll', 565], ['scroll', 565]]);
   open();
   f.state.feed = 'home:for-you'; f.state.detail = null;
   f.listeners.get('popstate')();
@@ -282,13 +284,42 @@ test('native Back waits for the exact tab to render, rejecting unrelated paths b
   assert.deepEqual(f.events, []);
   f.state.feed = 'home:following';
   f.reader.refresh();
-  assert.deepEqual(f.events, [['scroll', 250]]);
+  assert.deepEqual(f.events, [['scroll', 215]]);
   open();
   f.state.path = '/explore'; f.state.detail = null;
   f.listeners.get('popstate')();
   f.state.path = '/home'; f.state.feed = 'home:following';
   f.reader.refresh();
-  assert.deepEqual(f.events, [['scroll', 250]]);
+  assert.deepEqual(f.events, [['scroll', 215]]);
+});
+
+test('a fresh browser Back restores the opened post from the originating history entry', async t => {
+  let entry;
+  const outgoing = fixture(t, {
+    state:{y:250,path:'/home'},
+    saveReturnCheckpoint:(key,position) => { entry = {key,position}; }
+  });
+  await tick();
+  assert.equal(outgoing.reader.beforeOpen({id:'33'}),true);
+  assert.equal(entry.position.id,'33');
+  for (const [path,expected] of [['/home',565], ['/explore',0]]) {
+    const incoming = fixture(t, {
+      navigationType:'back_forward', state:{path,now:2000},
+      loadReturnCheckpoint:key => key === entry.key ? entry.position : null
+    });
+    await tick();
+    assert.equal(incoming.state.y,expected);
+    assert.equal(incoming.state.detail,null);
+  }
+});
+
+test('X returning directly from the tracked detail centers it on the original feed', async t => {
+  const f = fixture(t,{state:{y:250,path:'/home'}});
+  await tick();
+  assert.equal(f.reader.beforeOpen({id:'33'}),true);
+  f.state.feed=null; f.state.detail='33'; f.state.path='/user/status/33'; f.reader.update();
+  f.state.feed='home:following'; f.state.detail=null; f.state.path='/home'; f.state.y=0; f.reader.update();
+  assert.equal(f.state.y,565);
 });
 
 test('late saved data stays with its feed and live capture does not move the frozen following boundary', async t => {

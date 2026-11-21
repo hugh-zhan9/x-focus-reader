@@ -9,6 +9,7 @@
   const RELOAD_PROBE_DELAY_MS = 750;
   const OPEN_WINDOW_MS = 3000;
   const RETURN_WINDOW_MS = 3000;
+  const RETURN_CHECKPOINT_MS = 30 * 60 * 1000;
   const EDITABLE = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]';
   const ID = /^\d{1,30}$/;
 
@@ -167,9 +168,10 @@
       probeTimer = null;
     }
     function noteInput() {
-      if (!feedKey && firstEntry) initialInput = true;
+      if (!feedKey && (firstEntry || initialHistoryNavigation)) initialInput = true;
       firstEntry = false;
       cancelAuto();
+      if (feedKey && pendingReturn) { clearReturn(); originMarker = null; }
     }
     function startAuto(checkpoint) {
       const startedAt = now();
@@ -203,7 +205,12 @@
       if (!post) return false;
       const rect = post.element.getBoundingClientRect();
       if (rect.bottom <= rect.top) return false;
-      const delta = rect.top - position.offset;
+      const viewport = win.innerHeight || doc.documentElement?.clientHeight || 0;
+      const centered = (viewport - (rect.bottom - rect.top)) / 2;
+      // Center a normal card. For a card taller than the viewport, show its
+      // author and start of the body instead of the middle of a long image.
+      const targetOffset = position.center ? (centered >= 0 ? centered : Math.min(120, viewport / 5)) : position.offset;
+      const delta = rect.top - targetOffset;
       if (!Number.isFinite(delta)) return false;
       if (delta !== 0) win.scrollBy({ top: delta, behavior: 'instant' });
       return true;
@@ -217,6 +224,9 @@
       if (historyPath !== null && (incomingFeed || historyPath !== routePath())) historyPath = null;
       if (incomingDetail || fromHistory) firstEntry = false;
       if (incomingFeed !== feedKey || incomingDetail !== detailId) {
+        if (!incomingDetail && originMarker && detailId === originMarker.detailId &&
+            (incomingFeed === originMarker.feedKey ||
+              (!incomingFeed && originMarker.path && routePath() === originMarker.path))) armReturn();
         const oldFeed = feedKey;
         flush(oldFeed);
         if (scrollTimer !== null) win.clearTimeout(scrollTimer);
@@ -238,6 +248,14 @@
         if (pendingReturn && incomingDetail && incomingDetail !== pendingReturn.detailId) clearReturn();
         if (feedKey) {
           beginLoad(feedKey);
+          if (initialHistoryNavigation && !initialInput && !pendingReturn) {
+            let saved;
+            try { saved = adapter.loadReturnCheckpoint?.(feedKey); } catch {}
+            if (saved?.path === routePath() && ID.test(String(saved?.id ?? '')) &&
+                now() >= saved.at && now() - saved.at <= RETURN_CHECKPOINT_MS) {
+              waitForReturn({detailId:String(saved.id), feedKey, path:saved.path, position:{id:String(saved.id), center:true}});
+            }
+          }
           if (!suppressResume && !pendingReturn && !incomingDetail && !initialHistoryNavigation && !initialInput) {
             // A reload can reuse the current entry's exact last position even
             // while native scroll restoration or X's initial layout changes Y.
@@ -345,8 +363,9 @@
       cancelAuto();
       update();
       const id = String(post?.id ?? '');
-      if (!feedKey || !ID.test(id) || !current || !posts().some(item => String(item.id) === id)) return false;
-      pendingOpen = { detailId: id, feedKey, path: routePath(), position: { ...current }, expiresAt: now() + OPEN_WINDOW_MS };
+      if (!feedKey || !ID.test(id) || !posts().some(item => String(item.id) === id)) return false;
+      pendingOpen = { detailId: id, feedKey, path: routePath(), position: { id, center:true }, expiresAt: now() + OPEN_WINDOW_MS };
+      try { adapter.saveReturnCheckpoint?.(feedKey, {id, path:pendingOpen.path, at:now()}); } catch {}
       capture();
       return true;
     }
@@ -359,14 +378,17 @@
       pendingOpen = null;
       return false;
     }
-    function armReturn() {
-      if (!originMarker || detailId !== originMarker.detailId || pendingReturn) return false;
-      pendingReturn = { ...originMarker, expiresAt: now() + RETURN_WINDOW_MS };
+    function waitForReturn(marker) {
+      pendingReturn = { ...marker, expiresAt: now() + RETURN_WINDOW_MS };
       returnTimer = win.setTimeout(() => {
         update();
         if (pendingReturn) { clearReturn(); originMarker = null; boundary('missing-origin'); publish(); }
       }, RETURN_WINDOW_MS + 1);
       return true;
+    }
+    function armReturn() {
+      if (!originMarker || detailId !== originMarker.detailId || pendingReturn) return false;
+      return waitForReturn(originMarker);
     }
     function beforeBack() {
       update();

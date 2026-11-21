@@ -327,6 +327,11 @@
 
   function readerAdapter() {
     const progressKey = key => 'reading:' + key;
+    function writeHistoryEntry(field, value) {
+      const state = history.state;
+      if (state !== null && (typeof state !== 'object' || Array.isArray(state))) return;
+      history.replaceState({...state, [field]:value}, '');
+    }
     return {
       getPosts: () => Array.from(current.values()).filter(post =>
         !post.collapsed && post.anchor?.isConnected && statusLink(post.anchor)?.id === post.id),
@@ -340,10 +345,13 @@
         return checkpoint?.key === key ? checkpoint.position : null;
       },
       saveCheckpoint(key,position) {
-        const state = history.state;
-        if (state !== null && (typeof state !== 'object' || Array.isArray(state))) return;
-        history.replaceState({...state, xfrReadingCheckpoint:{key,position}}, '');
+        writeHistoryEntry('xfrReadingCheckpoint',{key,position});
       },
+      loadReturnCheckpoint(key) {
+        const checkpoint = history.state?.xfrReturnCheckpoint;
+        return checkpoint?.key === key ? checkpoint.returned : null;
+      },
+      saveReturnCheckpoint(key,returned) { writeHistoryEntry('xfrReturnCheckpoint',{key,returned}); },
       openPost(post) {
         if (!post?.anchor?.isConnected || statusLink(post.anchor)?.id !== post.id) return false;
         post.anchor.click();
