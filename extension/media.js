@@ -2,6 +2,7 @@
 (() => {
   const photo = '[data-testid="tweetPhoto"]';
   const carousel = '[data-testid="ScrollSnap-List"],[data-testid="ScrollSnap-SwipeableList"]';
+  const arrows = '[data-testid="ScrollSnap-prevButtonWrapper"],[data-testid="ScrollSnap-nextButtonWrapper"]';
   const gating = '[data-testid*="sensitive" i],[data-testid*="interstitial" i],[data-testid*="mediawarning" i]';
   const excluded = '[data-testid="quoteTweet"],[inert],[hidden],' + gating;
   const mixed = 'video,[data-testid="videoPlayer"],[data-testid="gifPlayer"],[data-testid="card.wrapper"]';
@@ -53,8 +54,18 @@
     while (native && native !== article && !items.every(item => native.contains(item.anchor))) native = native.parentElement;
     const anchors = new Set(items.map(item => item.anchor));
     function pure(group) {
-      return group && group !== article && article.contains(group) &&
-        !group.matches(excluded) && !group.querySelector(excluded + ',' + mixed + ',' + controls) &&
+      if (!group || group === article || !article.contains(group) || group.matches(excluded)) return false;
+      // X puts the arrows next to the track inside an aspect-ratio shell.
+      // Retire that shell as a unit, but only when it owns this photo track
+      // and has no other carousel or unrelated controls.
+      const ownsTrack = scrollRoot && group.contains(scrollRoot) &&
+        [...group.querySelectorAll(carousel)].every(list => list.contains(scrollRoot) || scrollRoot.contains(list));
+      const isArrowPart = el => {
+        const wrapper = ownsTrack && el.closest(arrows);
+        return wrapper && group.contains(wrapper) && !wrapper.contains(scrollRoot) && !scrollRoot.contains(wrapper);
+      };
+      return !group.querySelector(gating + ',' + mixed) &&
+        Array.from(group.querySelectorAll(excluded + ',' + controls)).every(isArrowPart) &&
         !group.textContent.trim() && Array.from(group.querySelectorAll('a[href]')).every(a => anchors.has(a)) &&
         Array.from(group.querySelectorAll(photo)).every(w => items.some(item => item.wrapper === w));
     }

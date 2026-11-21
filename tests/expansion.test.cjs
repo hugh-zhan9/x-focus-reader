@@ -163,3 +163,41 @@ test('native layout retained when no safe vertical slot follows the text',()=>{
   assert.equal(a.querySelector('[data-xfr-native-photos]'),null);
   assert.deepEqual(column.children.map(node=>node.tag),['div','a']);
 });
+
+
+test('successful expansion retires its native carousel arrows and reserved space, without touching neighboring controls',()=>{
+  const artwork = make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1)),slide(2,src(2))]);
+  const arrow = name => make('div',{'data-testid':'ScrollSnap-'+name+'ButtonWrapper'},[make('button')]);
+  const prev = arrow('prev'), next = arrow('next');
+  prev.setAttribute('hidden','');
+  const shell = make('div',{'data-testid':'ScrollSnap-SwipeableList'},[prev,artwork,next]);
+  const outside = arrow('next');
+  const other = article(body(),outside);
+  const a = article(body(),shell);
+  media.show(a,'12',origin);
+  const gallery = findGallery(a);
+  assert.equal(gallery.children.length,2);
+  assert.equal(a.children[2],shell);
+  assert.ok(prev.closest('[data-xfr-native-photos]') === shell);
+  assert.ok(next.closest('[data-xfr-native-photos]') === shell);
+  assert.equal(other.querySelector('[data-xfr-native-photos]'),null);
+  gallery.children[1].children[0].handlers.error();
+  assert.equal(prev.closest('[data-xfr-native-photos]'),null);
+  assert.equal(next.closest('[data-xfr-native-photos]'),null);
+  assert.ok(prev.hasAttribute('hidden'));
+});
+
+test('incomplete carousels and controls belonging to a different track are not retired',()=>{
+  const gap = make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1))]);
+  const left = make('div',{'data-testid':'ScrollSnap-prevButtonWrapper'},[make('button')]);
+  const a = article(body(),make('div',{},[gap,left]));
+  media.show(a,'12',origin);
+  assert.equal(a.querySelector('[data-xfr-native-photos]'),null);
+  const first = make('div',{'data-testid':'ScrollSnap-List'},[slide(1,src(1)),slide(2,src(2))]);
+  const siblingTrack = make('div',{'data-testid':'ScrollSnap-List'});
+  const right = make('div',{'data-testid':'ScrollSnap-nextButtonWrapper'},[make('button')]);
+  const b = article(body(),make('div',{},[first,siblingTrack,right]));
+  media.show(b,'12',origin);
+  assert.equal(right.closest('[data-xfr-native-photos]'),null);
+  media.prune(new Set());
+});
