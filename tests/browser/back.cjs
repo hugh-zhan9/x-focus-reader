@@ -8,6 +8,9 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const target = 1012;
+const deferredImagePath = '/__xfr_fixture/deferred-image.svg';
+const deferredImageHeight = 240;
+const deferredImage = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="${deferredImageHeight}"><rect width="100%" height="100%" fill="teal"/></svg>`;
 const slot = i => `<div data-testid="cellInnerDiv" id="cell-${i}" style="height:260px">` +
   `<article data-testid="tweet" style="height:100%;box-sizing:border-box" id="post-${i}">` +
   `<a id="open-${i}" href="/example/status/${i}"><time>Open ${i}</time></a>` +
@@ -32,6 +35,16 @@ function detail() {
 function home(returning) {
   primary.innerHTML = timeline;
   if (!returning) return;
+  if (scenario.startsWith('delayed-image')) {
+    // No dimensions are reserved before the image loads: Chromium must use
+    // its intrinsic dimensions and naturally shift the following rows.
+    const image = document.createElement('img');
+    image.id = 'fixture-delayed-image';
+    image.alt = '';
+    image.style.display = 'block';
+    document.getElementById('cell-1008').after(image);
+    image.src = ${JSON.stringify(deferredImagePath)};
+  }
   if (scenario === 'late-scroll') setTimeout(() => window.scrollTo(0,0),120);
   if (scenario === 'layout') setTimeout(() => {
     document.getElementById('cell-1008').style.height='540px';
@@ -102,15 +115,21 @@ document.addEventListener('click', e => {
 (async () => {
   const ext = path.resolve(__dirname,'../../extension');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(),'xfr-browser-test-'));
-  let ctx;
+  let ctx, imageArrived, releaseImage;
   try {
     ctx = await chromium.launchPersistentContext(profile, {
       channel:'chromium', headless:true, viewport:{width:1100,height:800},
       ...(process.env.XFR_TEST_CHROMIUM ? {executablePath:process.env.XFR_TEST_CHROMIUM} : {}),
       args:[`--disable-extensions-except=${ext}`, `--load-extension=${ext}`]
     });
-    await ctx.route('**/*', route => {
+    await ctx.route('**/*', async route => {
       const url = new URL(route.request().url());
+      if (url.origin === 'https://x.com' && url.pathname === deferredImagePath && route.request().resourceType() === 'image') {
+        assert.ok(imageArrived && releaseImage, 'unexpected fixture image request');
+        imageArrived.notify();
+        await releaseImage.promise;
+        return route.fulfill({contentType:'image/svg+xml',headers:{'cache-control':'no-store'},body:deferredImage});
+      }
       return url.origin === 'https://x.com' && route.request().isNavigationRequest()
         ? route.fulfill({contentType:'text/html',body:fixture})
         : route.abort();
@@ -118,9 +137,19 @@ document.addEventListener('click', e => {
     const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker',{timeout:10000});
     assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().name),'X Focus Reader');
     const scenarios = ['late-scroll','layout','delayed-target','manual','app-bar','home-link','native-auto','virtual-remount',
-      'late-discovery','late-discovery-manual'];
+      'late-discovery','late-discovery-manual','delayed-image','delayed-image-manual'];
     for (const scenario of process.argv.length > 2 ? process.argv.slice(2) : scenarios) {
       assert.ok(scenarios.includes(scenario), `unknown scenario: ${scenario}`);
+      const realImage = scenario.startsWith('delayed-image');
+      if (realImage) {
+        const waitGate = () => {
+          let notify;
+          const promise = new Promise(resolve => { notify = resolve; });
+          return {promise,notify};
+        };
+        imageArrived = waitGate();
+        releaseImage = waitGate();
+      }
       const page = await ctx.newPage();
       await page.goto(`https://x.com/home?case=${scenario}`);
       await page.waitForSelector('.xfr-control',{state:'attached'});
@@ -154,7 +183,51 @@ document.addEventListener('click', e => {
       if (scenario.startsWith('late-discovery')) {
         await page.waitForSelector('html[data-fixture-return-ready="yes"]',{state:'attached'});
       }
-      if (scenario === 'late-discovery-manual') {
+      if (realImage) {
+        // An observed request is held by Playwright until both an initial
+        // alignment and, for the manual case, trusted wheel input are proven.
+        const measure = () => page.locator(`#post-${target}`).evaluate(el => {
+          const r=el.getBoundingClientRect();
+          const image=document.getElementById('fixture-delayed-image');
+          return { y:scrollY, top:r.top, centerError:(r.top+r.bottom)/2-innerHeight/2,
+            imageHeight:image.getBoundingClientRect().height, naturalHeight:image.naturalHeight };
+        });
+        await page.waitForSelector('#fixture-delayed-image',{state:'attached'});
+        await page.waitForFunction(id => {
+          const el=document.getElementById(id), r=el?.getBoundingClientRect();
+          return r && Math.abs((r.top+r.bottom)/2-innerHeight/2)<=4;
+        }, `post-${target}`, {timeout:5000});
+        const noImage = await measure();
+        assert.equal(noImage.naturalHeight,0,'image must not be loaded at initial alignment');
+        assert.equal(noImage.imageHeight,0,'image must not initially occupy vertical space');
+        if (scenario === 'delayed-image-manual') {
+          await page.mouse.move(200,320);
+          await page.mouse.wheel(0,175);
+          await page.waitForFunction(y=>scrollY>=y+160,noImage.y,{timeout:5000});
+        }
+        const before = await measure();
+        let requestTimeout;
+        try {
+          await Promise.race([imageArrived.promise, new Promise((_, reject) => {
+            requestTimeout = setTimeout(() => reject(new Error('fixture image request did not arrive')), 5000);
+          })]);
+        } finally { clearTimeout(requestTimeout); }
+        releaseImage.notify();
+        await page.waitForFunction(h=>document.getElementById('fixture-delayed-image')?.naturalHeight===h,deferredImageHeight,{timeout:5000});
+        await page.waitForTimeout(650);
+        const after = await measure();
+        assert.equal(after.imageHeight,deferredImageHeight,'intrinsic image height must change flow');
+        if (scenario === 'delayed-image-manual') {
+          assert.ok(Math.abs(after.y-before.y)<=3,'image must not override the user’s wheel scroll');
+          assert.ok(Math.abs((after.top-before.top)-deferredImageHeight)<=4,'uncorrected post must move with the loaded image');
+          assert.ok(Math.abs(after.centerError)>20,'manual scenario must not accidentally end at center');
+        } else {
+          assert.ok(Math.abs(after.centerError)<=4,`image moved the exact post ${after.centerError}px off center`);
+          assert.ok(Math.abs((after.y-before.y)-deferredImageHeight)<=4,'scroll must compensate for the intrinsic layout shift');
+        }
+        console.log(`Image geometry: ${scenario}: ${JSON.stringify({before,after})}`);
+        imageArrived = releaseImage = null;
+      } else if (scenario === 'late-discovery-manual') {
         await page.waitForTimeout(650);
         assert.ok(Math.abs((await page.evaluate(() => window.scrollY))-retainedY)<=3,
           'late discovery must not override manual scrolling');
@@ -178,6 +251,7 @@ document.addEventListener('click', e => {
       await page.close();
     }
   } finally {
+    releaseImage?.notify();
     if (ctx) await ctx.close();
     fs.rmSync(profile,{recursive:true,force:true});
   }
